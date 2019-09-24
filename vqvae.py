@@ -1,3 +1,4 @@
+from typing import Optional
 import torch
 from torch import nn
 from torch.nn import functional as F
@@ -155,15 +156,33 @@ class Decoder(nn.Module):
 
 
 class VQVAE(nn.Module):
+    """Implementation of the VQ-VAE model
+    
+    Arguments:
+        in_channel (int):
+            number of channels in the input images
+        channel (int):
+            number of channels in the encoder/decoder's first layers
+        n_res_block (int):
+            number of residual blocks in the encoder/decoder
+        n_res_channel (int):
+            number of channels in the residual blocks
+        embed_dim (int):
+            dimension of the latent codes
+        n_embed (int):
+            size of the latent book (number of different latent codes to learn)
+        decay (float, 0 =< decay =< 1):
+            decay rate of the latent codes
+    """
     def __init__(
         self,
-        in_channel=3,
-        channel=128,
-        n_res_block=2,
-        n_res_channel=32,
-        embed_dim=64,
-        n_embed=512,
-        decay=0.99,
+        in_channel: int = 3,
+        channel: int = 128,
+        n_res_block: int = 2,
+        n_res_channel: int = 32,
+        embed_dim: int = 64,
+        n_embed: int = 512,
+        decay: float = 0.99,
     ):
         super().__init__()
 
