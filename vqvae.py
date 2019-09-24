@@ -3,6 +3,8 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
+from GANsynth_pytorch.normalizer import DataNormalizer
+
 
 # Copyright 2018 The Sonnet Authors. All Rights Reserved.
 #
@@ -183,6 +185,8 @@ class VQVAE(nn.Module):
         embed_dim: int = 64,
         n_embed: int = 512,
         decay: float = 0.99,
+        dataloader_for_gansynth_normalization: Optional[torch.utils.data.DataLoader] = None,
+        normalizer_statistics: Optional[object] = None
     ):
         super().__init__()
 
@@ -207,7 +211,19 @@ class VQVAE(nn.Module):
             stride=4,
         )
 
+        self.use_gansynth_normalization = (dataloader_for_gansynth_normalization is not None
+                                           or normalizer_statistics is not None)
+        self.dataloader = dataloader_for_gansynth_normalization
+        self.normalizer_statistics = normalizer_statistics
+        if self.normalizer_statistics:
+            self.data_normalizer = DataNormalizer(**self.normalizer_statistics)
+        elif self.use_gansynth_normalization:
+            self.data_normalizer = DataNormalizer(self.dataloader)
+
     def forward(self, input):
+        if self.use_gansynth_normalization:
+            input = self.data_normalizer.normalize(input)
+
         quant_t, quant_b, diff, _, _ = self.encode(input)
         dec = self.decode(quant_t, quant_b)
 
