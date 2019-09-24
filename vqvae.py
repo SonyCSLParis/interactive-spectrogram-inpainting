@@ -124,7 +124,8 @@ class Encoder(nn.Module):
 
 class Decoder(nn.Module):
     def __init__(
-        self, in_channel, out_channel, channel, n_res_block, n_res_channel, stride
+        self, in_channel, out_channel, channel, n_res_block, n_res_channel, stride,
+        output_activation: Optional[nn.Module] = None
     ):
         super().__init__()
 
@@ -150,6 +151,9 @@ class Decoder(nn.Module):
             blocks.append(
                 nn.ConvTranspose2d(channel, out_channel, 4, stride=2, padding=1)
             )
+
+        if output_activation is not None:
+            blocks.append(output_activation)
 
         self.blocks = nn.Sequential(*blocks)
 
@@ -185,6 +189,7 @@ class VQVAE(nn.Module):
         embed_dim: int = 64,
         n_embed: int = 512,
         decay: float = 0.99,
+        decoder_output_activation: Optional[nn.Module] = None,
         dataloader_for_gansynth_normalization: Optional[torch.utils.data.DataLoader] = None,
         normalizer_statistics: Optional[object] = None
     ):
@@ -209,6 +214,7 @@ class VQVAE(nn.Module):
             n_res_block,
             n_res_channel,
             stride=4,
+            output_activation = decoder_output_activation
         )
 
         self.use_gansynth_normalization = (dataloader_for_gansynth_normalization is not None
