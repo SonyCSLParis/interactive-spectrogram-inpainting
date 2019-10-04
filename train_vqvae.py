@@ -19,7 +19,8 @@ from scheduler import CycleScheduler
 
 from nsynth_dataset import NSynthH5Dataset
 from GANsynth_pytorch.pytorch_nsynth_lib.nsynth import (
-    NSynth, get_mel_spectrogram_and_IF)
+    NSynth, get_mel_spectrogram_and_IF,
+    make_to_mel_spec_and_IF_image_transform)
 import GANsynth_pytorch.utils.plots as gansynthplots
 
 import matplotlib as mpl
@@ -31,6 +32,7 @@ DIRPATH = os.path.dirname(os.path.abspath(__file__))
 
 
 HOP_LENGTH = 512
+N_FFT = 2048
 FS_HZ = 16000
 
 
@@ -213,24 +215,20 @@ if __name__ == '__main__':
         if args.dataset_type == 'wav':
             valid_pitch_range = [24, 84]
 
-            def chained_transform(sample):
-                mel_spec, mel_IF = get_mel_spectrogram_and_IF(
-                    sample, hop_length=HOP_LENGTH)
-                mel_spec_and_IF_as_image_tensor = NSynthH5Dataset._to_image(
-                    [a.astype(np.float32)
-                     for a in [mel_spec, mel_IF]])
-                return mel_spec_and_IF_as_image_tensor
-            to_mel_spec_and_if = transforms.Lambda(chained_transform)
+            transform = make_to_mel_spec_and_IF_image_transform(
+                hop_length=HOP_LENGTH,
+                n_fft=N_FFT
+            )
             nsynth_dataset = NSynth(
                 root=str(train_dataset_path),
-                transform=chained_transform,
+                transform=transform,
                 valid_pitch_range=valid_pitch_range,
                 categorical_field_list=[],
                 convert_to_float=True)
             if args.validation_dataset_path:
                 nsynth_validation_dataset = NSynth(
                     root=str(validation_dataset_path),
-                    transform=chained_transform,
+                    transform=transform,
                     valid_pitch_range=valid_pitch_range,
                     categorical_field_list=[],
                     convert_to_float=True)
