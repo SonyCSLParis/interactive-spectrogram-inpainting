@@ -231,13 +231,14 @@ class VQVAE(nn.Module):
             groups=groups
         )
 
-        self.use_gansynth_normalization = (dataloader_for_gansynth_normalization is not None
+        self.use_gansynth_normalization = (
+            dataloader_for_gansynth_normalization is not None
                                            or normalizer_statistics is not None)
         self.dataloader = dataloader_for_gansynth_normalization
         self.normalizer_statistics = normalizer_statistics
         if self.normalizer_statistics:
             self.data_normalizer = DataNormalizer(**self.normalizer_statistics)
-        elif self.use_gansynth_normalization:
+        elif self.dataloader:
             self.data_normalizer = DataNormalizer(self.dataloader)
 
     def forward(self, input):
@@ -247,6 +248,8 @@ class VQVAE(nn.Module):
         quant_t, quant_b, diff, _, _ = self.encode(input)
         dec = self.decode(quant_t, quant_b)
 
+        if self.use_gansynth_normalization:
+            dec = self.data_normalizer.denormalize(dec)
         return dec, diff
 
     def encode(self, input):

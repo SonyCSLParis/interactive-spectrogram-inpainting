@@ -169,14 +169,28 @@ if __name__ == '__main__':
         in_channel = 2
         
         # vqvae_decoder_activation = nn.Tanh()
+        dataloader_for_gansynth_normalization = None
+        normalizer_statistics = None
+        if args.precomputed_normalization_statistics is not None:
+            with open(args.precomputed_normalization_statistics, 'rb') as f:
+                normalizer_statistics = pickle.load(f)
+        else:
         dataloader_for_gansynth_normalization = loader
     else:
         raise ValueError("Unrecognized dataset name: ",
                          dataset_name)
 
     print("Initializing model")
+    if args.disable_normalization:
+        dataloader_for_gansynth_normalization = None
+
+    vqvae_parameters = {'in_channel': in_channel,
+                        'groups': args.groups}
+
     vqvae = VQVAE(in_channel=in_channel,
                   decoder_output_activation=vqvae_decoder_activation,
+                  dataloader_for_gansynth_normalization=dataloader_for_gansynth_normalization,
+                  normalizer_statistics=normalizer_statistics,
                   groups=args.groups,
                   )
     if dataloader_for_gansynth_normalization is not None:
