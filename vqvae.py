@@ -86,29 +86,36 @@ class ResBlock(nn.Module):
 
     def forward(self, input):
         out = self.conv(input)
+
+        # residual connection
         out += input
 
         return out
 
 
 class Encoder(nn.Module):
-    def __init__(self, in_channel, channel, n_res_block, n_res_channel, stride):
+    def __init__(self, in_channel: int, channel: int, n_res_block: int,
+                 n_res_channel: int, stride: int, groups: int = 1):
         super().__init__()
 
         if stride == 4:
             blocks = [
-                nn.Conv2d(in_channel, channel // 2, 4, stride=2, padding=1),
+                nn.Conv2d(in_channel, channel // 2, 4, stride=2, padding=1,
+                          groups=groups),
                 nn.ReLU(inplace=True),
-                nn.Conv2d(channel // 2, channel, 4, stride=2, padding=1),
+                nn.Conv2d(channel // 2, channel, 4, stride=2, padding=1,
+                          groups=groups),
                 nn.ReLU(inplace=True),
-                nn.Conv2d(channel, channel, 3, padding=1),
+                nn.Conv2d(channel, channel, 3, padding=1,
+                          groups=groups),
             ]
 
         elif stride == 2:
             blocks = [
-                nn.Conv2d(in_channel, channel // 2, 4, stride=2, padding=1),
+                nn.Conv2d(in_channel, channel // 2, 4, stride=2, padding=1,
+                          groups=groups),
                 nn.ReLU(inplace=True),
-                nn.Conv2d(channel // 2, channel, 3, padding=1),
+                nn.Conv2d(channel // 2, channel, 3, padding=1, groups=groups),
             ]
 
         for i in range(n_res_block):
@@ -123,10 +130,10 @@ class Encoder(nn.Module):
 
 
 class Decoder(nn.Module):
-    def __init__(
-        self, in_channel, out_channel, channel, n_res_block, n_res_channel, stride,
-        output_activation: Optional[nn.Module] = None
-    ):
+    def __init__(self, in_channel: int, out_channel: int, channel: int,
+                 n_res_block: int, n_res_channel: int, stride: int,
+                 groups: int = 1,
+                 output_activation: Optional[nn.Module] = None):
         super().__init__()
 
         blocks = [nn.Conv2d(in_channel, channel, 3, padding=1)]
@@ -139,17 +146,19 @@ class Decoder(nn.Module):
         if stride == 4:
             blocks.extend(
                 [
-                    nn.ConvTranspose2d(channel, channel // 2, 4, stride=2, padding=1),
+                    nn.ConvTranspose2d(channel, channel // 2, 4, stride=2,
+                                       padding=1, groups=groups),
                     nn.ReLU(inplace=True),
                     nn.ConvTranspose2d(
-                        channel // 2, out_channel, 4, stride=2, padding=1
-                    ),
+                        channel // 2, out_channel, 4, stride=2, padding=1,
+                        groups=groups),
                 ]
             )
 
         elif stride == 2:
             blocks.append(
-                nn.ConvTranspose2d(channel, out_channel, 4, stride=2, padding=1)
+                nn.ConvTranspose2d(channel, out_channel, 4, stride=2,
+                                   padding=1, groups=groups)
             )
 
         if output_activation is not None:
@@ -189,18 +198,22 @@ class VQVAE(nn.Module):
         embed_dim: int = 64,
         n_embed: int = 512,
         decay: float = 0.99,
+        groups: int = 1,
         decoder_output_activation: Optional[nn.Module] = None,
         dataloader_for_gansynth_normalization: Optional[torch.utils.data.DataLoader] = None,
         normalizer_statistics: Optional[object] = None
     ):
         super().__init__()
 
-        self.enc_b = Encoder(in_channel, channel, n_res_block, n_res_channel, stride=4)
-        self.enc_t = Encoder(channel, channel, n_res_block, n_res_channel, stride=2)
+        self.enc_b = Encoder(in_channel, channel, n_res_block, n_res_channel,
+                             stride=4, groups=groups)
+        self.enc_t = Encoder(channel, channel, n_res_block, n_res_channel,
+                             stride=2, groups=groups)
         self.quantize_conv_t = nn.Conv2d(channel, embed_dim, 1)
         self.quantize_t = Quantize(embed_dim, n_embed, decay=decay)
         self.dec_t = Decoder(
-            embed_dim, embed_dim, channel, n_res_block, n_res_channel, stride=2
+            embed_dim, embed_dim, channel, n_res_block, n_res_channel,
+            stride=2, groups=groups
         )
         self.quantize_conv_b = nn.Conv2d(embed_dim + channel, embed_dim, 1)
         self.quantize_b = Quantize(embed_dim, n_embed, decay=decay)
@@ -214,7 +227,7 @@ class VQVAE(nn.Module):
             n_res_block,
             n_res_channel,
             stride=4,
-            output_activation = decoder_output_activation
+            groups=groups
         )
 
         self.use_gansynth_normalization = (dataloader_for_gansynth_normalization is not None

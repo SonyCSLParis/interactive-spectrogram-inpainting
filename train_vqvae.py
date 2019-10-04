@@ -84,6 +84,7 @@ def train(epoch, loader, model, optimizer, scheduler, device):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--size', type=int, default=256)
+    parser.add_argument('--groups', type=int, default=1)
     parser.add_argument('--epoch', type=int, default=560)
     parser.add_argument('--lr', type=float, default=3e-4)
     parser.add_argument('--dataset', type=str)
@@ -134,7 +135,7 @@ if __name__ == '__main__':
     print("Initializing model")
     vqvae = VQVAE(in_channel=in_channel,
                   decoder_output_activation=vqvae_decoder_activation,
-                  dataloader_for_gansynth_normalization=dataloader_for_gansynth_normalization
+                  groups=args.groups,
                   )
     if dataloader_for_gansynth_normalization is not None:
         # store normalization parameters
