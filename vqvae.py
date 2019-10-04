@@ -227,6 +227,7 @@ class VQVAE(nn.Module):
             n_res_block,
             n_res_channel,
             stride=4,
+            output_activation=decoder_output_activation,
             groups=groups
         )
 
