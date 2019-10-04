@@ -12,7 +12,9 @@ from tqdm import tqdm
 from vqvae import VQVAE
 from scheduler import CycleScheduler
 
-from nsynth_dataset import NSynthDataset
+from nsynth_dataset import NSynthH5Dataset
+from GANsynth_pytorch.pytorch_nsynth_lib.nsynth import (
+    NSynth, get_mel_spectrogram_and_IF)
 
 import os
 DIRPATH = os.path.dirname(os.path.abspath(__file__))
@@ -28,7 +30,8 @@ def train(epoch, loader, model, optimizer, scheduler, device):
     mse_sum = 0
     mse_n = 0
 
-    for i, ((img, pitch), target) in enumerate(loader):
+    model.train()
+    for i, (img, pitch) in enumerate(loader):
         model.zero_grad()
 
         img = img.to(device)
@@ -88,10 +91,13 @@ if __name__ == '__main__':
     parser.add_argument('--epoch', type=int, default=560)
     parser.add_argument('--lr', type=float, default=3e-4)
     parser.add_argument('--dataset', type=str)
+    parser.add_argument('--dataset_type', choices=['hdf5', 'wav'],
+                        required=True)
     parser.add_argument('--sched', type=str)
     parser.add_argument('--batch_size', type=int, default=64)
     parser.add_argument('--num_workers', type=int, default=4)
-    parser.add_argument('--path', type=str)
+    parser.add_argument('--train_dataset_path', type=str)
+    parser.add_argument('--validation_dataset_path', type=str)
 
     args = parser.parse_args()
 
@@ -99,7 +105,8 @@ if __name__ == '__main__':
 
     device = 'cuda'
 
-    path = pathlib.Path(args.path)
+    train_dataset_path = pathlib.Path(args.train_dataset_path)
+    validation_dataset_path = pathlib.Path(args.validation_dataset_path)
     dataset_name = args.dataset
     print("Loading dataset: ", dataset_name)
     vqvae_decoder_activation = None
@@ -112,17 +119,52 @@ if __name__ == '__main__':
                 transforms.Normalize([0.5, 0.5, 0.5], [0.5, 0.5, 0.5])
             ]
         )
-        dataset = datasets.ImageFolder(args.path, transform=transform)
-        loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True, num_workers=4)
+        dataset = datasets.ImageFolder(train_dataset_path, transform=transform)
+        loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True,
+                            num_workers=4)
         dataloader_for_gansynth_normalization = None
         in_channel = 3
     elif dataset_name == 'nsynth':
-        nsynth_dataset_path = args.path
-        nsynth_dataset = NSynthDataset(
-            root_path=nsynth_dataset_path,
+        if args.dataset_type == 'wav':
+            valid_pitch_range = [24, 84]
+
+            def chained_transform(sample):
+                mel_spec, mel_IF = get_mel_spectrogram_and_IF(
+                    sample, hop_length=HOP_LENGTH)
+                mel_spec_and_IF_as_image_tensor = NSynthH5Dataset._to_image(
+                    [a.astype(np.float32)
+                     for a in [mel_spec, mel_IF]])
+                return mel_spec_and_IF_as_image_tensor
+            to_mel_spec_and_if = transforms.Lambda(chained_transform)
+            nsynth_dataset = NSynth(
+                root=str(train_dataset_path),
+                transform=chained_transform,
+                valid_pitch_range=valid_pitch_range,
+                categorical_field_list=[],
+                convert_to_float=True)
+            if args.validation_dataset_path:
+                nsynth_validation_dataset = NSynth(
+                    root=str(validation_dataset_path),
+                    transform=chained_transform,
+                    valid_pitch_range=valid_pitch_range,
+                    categorical_field_list=[],
+                    convert_to_float=True)
+        elif args.dataset_type == 'hdf5':
+            nsynth_dataset = NSynthH5Dataset(
+                root_path=train_dataset_path,
+                use_mel_frequency_scale=True)
+            if args.validation_dataset_path:
+                nsynth_validation_dataset = NSynthH5Dataset(
+                    root_path=validation_dataset_path,
             use_mel_frequency_scale=True)
+        else:
+            assert False
         loader = DataLoader(nsynth_dataset, batch_size=args.batch_size,
                             num_workers=args.num_workers, shuffle=True)
+        validation_loader = DataLoader(nsynth_validation_dataset,
+                                       batch_size=args.batch_size,
+                                       num_workers=args.num_workers,
+                                       shuffle=True)
         
         in_channel = 2
         
