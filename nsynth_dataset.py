@@ -7,12 +7,11 @@ from torchvision.datasets import DatasetFolder
 from h5torch import HDF5Dataset
 
 
-
 class NSynthH5Dataset(DatasetFolder):
     """A simple hdf5-based dataset for pre-computed Nsynth representations
 
     The representations are shaped as images for use with Conv2D layers
-    
+
     Taken from https://github.com/ss12f32v/GANsynth-pytorch/
     """
     def __init__(self, root_path: str, transform=None,
@@ -23,7 +22,7 @@ class NSynthH5Dataset(DatasetFolder):
                          transform=transform)
 
     @staticmethod
-    def _to_image(*channels_np: List[np.ndarray]):
+    def _to_image(channels_np: List[np.ndarray]):
         """Reshape data into nn.Conv2D-compatible image shape"""
         channel_dimension = 0
         channels = []
@@ -34,15 +33,20 @@ class NSynthH5Dataset(DatasetFolder):
             channels.append(data_tensor_as_image_channel)
 
         return torch.cat(channels, channel_dimension)
-    
+
+    def __getitem__(self, index):
+        """Discards the empty target added by DatasetFolder"""
+        ((img, pitch), _) = super().__getitem__(index)
+        return img, pitch
+
     def loader(self, file_path):
         with h5py.File(file_path, 'r') as sample_file:
             channel_arrays = []
             for channel_name in ['Spec', 'IF']:
                 full_channel_name = self.data_prefix + channel_name
                 channel_arrays.append(sample_file[full_channel_name][()])
-            sample = self._to_image(*channel_arrays)
-            
+            sample = self._to_image(channel_arrays)
+
             pitch = sample_file.attrs['pitch']
             pitch_tensor = torch.LongTensor([pitch])
 
