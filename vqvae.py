@@ -175,7 +175,7 @@ class Decoder(nn.Module):
 
 class VQVAE(nn.Module):
     """Implementation of the VQ-VAE model
-    
+
     Arguments:
         in_channel (int):
             number of channels in the input images
