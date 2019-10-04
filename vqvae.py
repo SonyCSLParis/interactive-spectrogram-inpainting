@@ -270,3 +270,57 @@ class VQVAE(nn.Module):
         dec = self.decode(quant_t, quant_b)
 
         return dec
+
+
+class InferenceVQVAE(object):
+    def __init__(self, vqvae: VQVAE, device: str):
+        self.vqvae = vqvae
+        self.device = device
+
+    def sample_reconstructions(self, dataloader):
+        self.vqvae.eval()
+
+        iterator = iter(dataloader)
+        mag_and_IF_batch, _ = next(iterator)
+        with torch.no_grad():
+            reconstructed_mag_and_IF_batch, _ = self.vqvae.forward(
+                mag_and_IF_batch.to(self.device))
+
+        return mag_and_IF_batch, reconstructed_mag_and_IF_batch
+
+    def mag_and_IF_to_audio(self, mag_and_IF: torch.Tensor,
+                            use_mel_frequency: bool = True):
+        input_is_batch = True
+        if mag_and_IF.ndim == 3:
+            # a single sample was provided, wrap it as a batch
+            input_is_batch = False
+            mag_and_IF = mag_and_IF.unsqueeze(0)
+        elif mag_and_IF.ndim == 4:
+            pass
+        else:
+            raise ValueError("Input must either be a sample of shape "
+                             "[channels, freq, time] or a batch of such")
+
+        if use_mel_frequency:
+            spec_to_audio = (GANsynth_pytorch.spectrograms_helper
+                             .mel_mag_and_IF_to_audio)
+        else:
+            spec_to_audio = (GANsynth_pytorch.spectrograms_helper
+                             .mag_and_IF_to_audio)
+
+        channel_dimension = 1
+        mag_batch = mag_and_IF.select(channel_dimension, 0
+                                      ).data.cpu().numpy()
+        IF_batch = mag_and_IF.select(channel_dimension, 1
+                                     ).data.cpu().numpy()
+
+        audios = []
+        for mag, IF in zip(mag_batch, IF_batch):
+            audio_np = spec_to_audio(mag, IF)
+            audio = torch.from_numpy(audio_np)
+            audios.append(audio)
+        if input_is_batch:
+            return torch.cat([audio.unsqueeze(0) for audio in audios],
+                             0)
+        else:
+            return audios[0]
