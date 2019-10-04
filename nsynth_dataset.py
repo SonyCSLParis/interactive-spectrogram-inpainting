@@ -7,8 +7,9 @@ from torchvision.datasets import DatasetFolder
 from h5torch import HDF5Dataset
 
 
-class NSynthDataset(DatasetFolder):
-    """A simple hdf5-based dataloader for pre-computed Nsynth representations
+
+class NSynthH5Dataset(DatasetFolder):
+    """A simple hdf5-based dataset for pre-computed Nsynth representations
 
     The representations are shaped as images for use with Conv2D layers
     
