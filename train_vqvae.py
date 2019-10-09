@@ -48,7 +48,8 @@ def train(epoch: int, loader: DataLoader, model: nn.Module,
           tensorboard_audio_interval_epochs: int = 5,
           tensorboard_num_audio_samples: int = 10,
           ) -> None:
-    loader = tqdm(loader)
+    loader = tqdm(loader, position=1)
+    status_bar = tqdm(total=0, position=0, bar_format='{desc}')
 
     criterion = nn.MSELoss()
 
@@ -64,7 +65,7 @@ def train(epoch: int, loader: DataLoader, model: nn.Module,
 
         img = img.to(device)
 
-        out, latent_loss = model(img)
+        out, latent_loss, perplexity_t, perplexity_b = model(img)
         recon_loss = criterion(out, img)
         latent_loss = latent_loss.mean()
         loss = recon_loss + latent_loss_weight * latent_loss
@@ -81,11 +82,11 @@ def train(epoch: int, loader: DataLoader, model: nn.Module,
 
         batch_reconstruction_mse = recon_loss.item()
         batch_latent_loss = latent_loss.item()
-        loader.set_description(
+        status_bar.set_description_str(
             (
-                f'epoch: {epoch + 1}; mse: {batch_reconstruction_mse:.5f}; '
-                f'latent: {batch_latent_loss:.3f}; avg mse: {mse_sum / mse_n:.5f}; '
-                f'lr: {lr:.5f}'
+                f'epoch: {epoch + 1}; '
+                f'avg mse: {mse_sum / mse_n:.4f}; latent: {batch_latent_loss:.4f}; '
+                f'perplexity_bottom: {perplexity_b:.4f}; perplexity_top: {perplexity_t:.4f}'
             )
         )
         if tensorboard_writer is not None:
@@ -99,6 +100,12 @@ def train(epoch: int, loader: DataLoader, model: nn.Module,
             tensorboard_writer.add_scalar('training/latent_loss',
                                           batch_latent_loss,
                                           num_samples_seen)
+            tensorboard_writer.add_scalar('training/perplexity_top',
+                                          perplexity_t,
+                                          num_samples_seen)
+            tensorboard_writer.add_scalar('training/perplexity_bottom',
+                                          perplexity_b,
+                                          num_samples_seen)
 
         if not disable_image_dumps and i % 100 == 0:
             model.eval()
@@ -106,7 +113,7 @@ def train(epoch: int, loader: DataLoader, model: nn.Module,
             sample = img[:image_dump_sample_size]
 
             with torch.no_grad():
-                out, _ = model(sample)
+                out, *_ = model(sample)
 
             channel_dim = 1
             for channel_index, channel_name in enumerate(
@@ -138,6 +145,8 @@ def evaluate(loader: DataLoader, model: nn.Module, device: str):
         latent_loss_weight = 0.25
 
         mse_sum = 0
+        perplexity_t_sum = 0
+        perplexity_b_sum = 0
         mse_n = 0
         latent_loss_total = 0
 
@@ -145,16 +154,24 @@ def evaluate(loader: DataLoader, model: nn.Module, device: str):
         for i, (img, pitch) in enumerate(loader):
             img = img.to(device)
 
-            out, latent_loss = model(img)
+            out, latent_loss, perplexity_t, perplexity_b = model(img)
             recon_loss = criterion(out, img)
             latent_loss = latent_loss.mean()
             loss = recon_loss + latent_loss_weight * latent_loss
 
-            mse_sum += recon_loss.item() * img.shape[0]
+            mse_sum += recon_loss * img.shape[0]
+            perplexity_t_sum += perplexity_t
+            perplexity_b_sum += perplexity_b
             mse_n += img.shape[0]
             latent_loss_total += latent_loss
 
-        return mse_sum/mse_n, (latent_loss / len(loader)).item()
+        mse_average = mse_sum.item() / mse_n
+        latent_loss_average = latent_loss_total.item() / len(loader)
+        perplexity_t_average = perplexity_t_sum.item() / len(loader)
+        perplexity_b_average = perplexity_b_sum.item() / len(loader)
+
+        return (mse_average, latent_loss_average,
+                perplexity_t_average, perplexity_b_average)
 
 
 if __name__ == '__main__':
@@ -322,7 +339,8 @@ if __name__ == '__main__':
             )
 
         # eval on validation set
-        mse_validation, latent_loss_validation = evaluate(
+        (mse_validation, latent_loss_validation,
+         perplexity_t_validation, perplexity_b_validation) = evaluate(
             validation_loader, model, device)
 
         tensorboard_writer.add_scalar('validation/reconstruction_mse',
@@ -330,6 +348,12 @@ if __name__ == '__main__':
                                       global_step=epoch_index)
         tensorboard_writer.add_scalar('validation/latent_loss',
                                       latent_loss_validation,
+                                      global_step=epoch_index)
+        tensorboard_writer.add_scalar('validation/perplexity_top',
+                                      perplexity_t_validation,
+                                      global_step=epoch_index)
+        tensorboard_writer.add_scalar('validation/perplexity_bottom',
+                                      perplexity_b_validation,
                                       global_step=epoch_index)
 
         if tensorboard_writer is not None:

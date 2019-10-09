@@ -59,10 +59,12 @@ class Quantize(nn.Module):
                 1 - self.decay, embed_onehot.sum(0)
             )
             embed_sum = flatten.transpose(0, 1) @ embed_onehot
-            self.embed_avg.data.mul_(self.decay).add_(1 - self.decay, embed_sum)
+            self.embed_avg.data.mul_(self.decay).add_(1 - self.decay,
+                                                      embed_sum)
             n = self.cluster_size.sum()
             cluster_size = (
-                (self.cluster_size + self.eps) / (n + self.n_embed * self.eps) * n
+                (self.cluster_size + self.eps)
+                / (n + self.n_embed * self.eps) * n
             )
             embed_normalized = self.embed_avg / cluster_size.unsqueeze(0)
             self.embed.data.copy_(embed_normalized)
@@ -70,7 +72,11 @@ class Quantize(nn.Module):
         diff = (quantize.detach() - input).pow(2).mean()
         quantize = input + (quantize - input).detach()
 
-        return quantize, diff, embed_ind
+        average_embedding_probas = embed_onehot.mean(dim=0)
+        code_assignation_perplexity = torch.exp(
+            - torch.sum(average_embedding_probas
+                        * torch.log(average_embedding_probas.clamp(min=1e-7))))
+        return quantize, diff, embed_ind, code_assignation_perplexity
 
     def embed_code(self, embed_id):
         return F.embedding(embed_id, self.embed.transpose(0, 1))
@@ -180,7 +186,7 @@ class VQVAE(nn.Module):
         in_channel (int):
             number of channels in the input images
         channel (int):
-            number of channels in the encoder/decoder's first layers
+            number of channels in the encoder/decoder
         n_res_block (int):
             number of residual blocks in the encoder/decoder
         n_res_channel (int):
@@ -236,7 +242,7 @@ class VQVAE(nn.Module):
 
         self.use_gansynth_normalization = (
             dataloader_for_gansynth_normalization is not None
-                                           or normalizer_statistics is not None)
+            or normalizer_statistics is not None)
         self.dataloader = dataloader_for_gansynth_normalization
         self.normalizer_statistics = normalizer_statistics
         if self.normalizer_statistics:
@@ -248,19 +254,20 @@ class VQVAE(nn.Module):
         if self.use_gansynth_normalization:
             input = self.data_normalizer.normalize(input)
 
-        quant_t, quant_b, diff, _, _ = self.encode(input)
+        quant_t, quant_b, diff, *_, perplexity_t, perplexity_b = self.encode(
+            input)
         dec = self.decode(quant_t, quant_b)
 
         if self.use_gansynth_normalization:
             dec = self.data_normalizer.denormalize(dec)
-        return dec, diff
+        return dec, diff, perplexity_t, perplexity_b
 
     def encode(self, input):
         enc_b = self.enc_b(input)
         enc_t = self.enc_t(enc_b)
 
         quant_t = self.quantize_conv_t(enc_t).permute(0, 2, 3, 1)
-        quant_t, diff_t, id_t = self.quantize_t(quant_t)
+        quant_t, diff_t, id_t, perplexity_t = self.quantize_t(quant_t)
         quant_t = quant_t.permute(0, 3, 1, 2)
         diff_t = diff_t.unsqueeze(0)
 
@@ -268,11 +275,12 @@ class VQVAE(nn.Module):
         enc_b = torch.cat([dec_t, enc_b], 1)
 
         quant_b = self.quantize_conv_b(enc_b).permute(0, 2, 3, 1)
-        quant_b, diff_b, id_b = self.quantize_b(quant_b)
+        quant_b, diff_b, id_b, perplexity_b = self.quantize_b(quant_b)
         quant_b = quant_b.permute(0, 3, 1, 2)
         diff_b = diff_b.unsqueeze(0)
 
-        return quant_t, quant_b, diff_t + diff_b, id_t, id_b
+        return (quant_t, quant_b, diff_t + diff_b, id_t, id_b,
+                perplexity_t, perplexity_b)
 
     def decode(self, quant_t, quant_b):
         upsample_t = self.upsample_t(quant_t)
@@ -303,7 +311,7 @@ class InferenceVQVAE(object):
         iterator = iter(dataloader)
         mag_and_IF_batch, _ = next(iterator)
         with torch.no_grad():
-            reconstructed_mag_and_IF_batch, _ = self.vqvae.forward(
+            reconstructed_mag_and_IF_batch, *_ = self.vqvae.forward(
                 mag_and_IF_batch.to(self.device))
 
         return mag_and_IF_batch, reconstructed_mag_and_IF_batch
