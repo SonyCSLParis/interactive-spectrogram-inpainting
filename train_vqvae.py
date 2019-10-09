@@ -268,15 +268,12 @@ if __name__ == '__main__':
 
         in_channel = 2
 
-        if not (args.input_normalization
-                or args.precomputed_normalization_statistics):
             dataloader_for_gansynth_normalization = None
             normalizer_statistics = None
-        else:
             if args.precomputed_normalization_statistics is not None:
                 with open(args.precomputed_normalization_statistics, 'rb') as f:
                     normalizer_statistics = pickle.load(f)
-            else:
+        elif args.input_normalization:
                 dataloader_for_gansynth_normalization = loader
     else:
         raise ValueError("Unrecognized dataset name: ",
