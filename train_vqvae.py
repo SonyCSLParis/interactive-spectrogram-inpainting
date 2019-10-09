@@ -177,6 +177,9 @@ def evaluate(loader: DataLoader, model: nn.Module, device: str):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--size', type=int, default=256)
+    parser.add_argument('--num_embeddings', type=int, default=512)
+    parser.add_argument('--hidden_channels', type=int, default=128)
+    parser.add_argument('--residual_channels', type=int, default=32)
     parser.add_argument('--epoch', type=int, default=560)
     parser.add_argument('--lr', type=float, default=3e-4)
     parser.add_argument('--dataset', type=str, choices=['nsynth', 'imagenet'])
@@ -268,13 +271,13 @@ if __name__ == '__main__':
 
         in_channel = 2
 
-            dataloader_for_gansynth_normalization = None
-            normalizer_statistics = None
-            if args.precomputed_normalization_statistics is not None:
-                with open(args.precomputed_normalization_statistics, 'rb') as f:
-                    normalizer_statistics = pickle.load(f)
+        dataloader_for_gansynth_normalization = None
+        normalizer_statistics = None
+        if args.precomputed_normalization_statistics is not None:
+            with open(args.precomputed_normalization_statistics, 'rb') as f:
+                normalizer_statistics = pickle.load(f)
         elif args.input_normalization:
-                dataloader_for_gansynth_normalization = loader
+            dataloader_for_gansynth_normalization = loader
     else:
         raise ValueError("Unrecognized dataset name: ",
                          dataset_name)
@@ -282,9 +285,16 @@ if __name__ == '__main__':
     print("Initializing model")
 
     vqvae_parameters = {'in_channel': in_channel,
-                        'groups': args.groups}
+                        'groups': args.groups,
+                        'num_embeddings': args.num_embeddings,
+                        'hidden_channels': args.hidden_channels,
+                        'residual_channels': args.residual_channels
+                        }
 
     vqvae = VQVAE(in_channel=in_channel,
+                  channel=args.hidden_channels,
+                  n_res_channel=args.residual_channels,
+                  n_embed=args.num_embeddings,
                   decoder_output_activation=vqvae_decoder_activation,
                   dataloader_for_gansynth_normalization=dataloader_for_gansynth_normalization,
                   normalizer_statistics=normalizer_statistics,
