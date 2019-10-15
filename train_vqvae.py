@@ -20,7 +20,7 @@ from scheduler import CycleScheduler
 from nsynth_dataset import NSynthH5Dataset
 from GANsynth_pytorch.pytorch_nsynth_lib.nsynth import (
     NSynth, get_mel_spectrogram_and_IF,
-    make_to_mel_spec_and_IF_image_transform)
+    WavToSpectrogramDataLoader)
 import GANsynth_pytorch.utils.plots as gansynthplots
 
 import matplotlib as mpl
@@ -231,27 +231,31 @@ if __name__ == '__main__':
                             num_workers=4)
         dataloader_for_gansynth_normalization = None
         in_channel = 3
+
     elif dataset_name == 'nsynth':
+        # class to use for building the dataloaders
+        dataloader_class = DataLoader
         if args.dataset_type == 'wav':
             valid_pitch_range = [24, 84]
+            # converts wavforms to spectrograms on-the-fly on GPU
+            from functools import partial
+            dataloader_class = partial(WavToSpectrogramDataLoader,
+                                       device=device,
+                                       n_fft=N_FFT, hop_length=HOP_LENGTH)
 
-            transform = make_to_mel_spec_and_IF_image_transform(
-                hop_length=HOP_LENGTH,
-                n_fft=N_FFT
-            )
             nsynth_dataset = NSynth(
                 root=str(train_dataset_path),
-                transform=transform,
                 valid_pitch_range=valid_pitch_range,
                 categorical_field_list=[],
-                convert_to_float=True)
+                squeeze_mono_channel=True)
+
             if args.validation_dataset_path:
                 nsynth_validation_dataset = NSynth(
                     root=str(validation_dataset_path),
-                    transform=transform,
                     valid_pitch_range=valid_pitch_range,
                     categorical_field_list=[],
-                    convert_to_float=True)
+                    squeeze_mono_channel=True)
+
         elif args.dataset_type == 'hdf5':
             nsynth_dataset = NSynthH5Dataset(
                 root_path=train_dataset_path,
@@ -262,12 +266,17 @@ if __name__ == '__main__':
                     use_mel_frequency_scale=True)
         else:
             assert False
-        loader = DataLoader(nsynth_dataset, batch_size=args.batch_size,
-                            num_workers=args.num_workers, shuffle=True)
-        validation_loader = DataLoader(nsynth_validation_dataset,
+
+        loader = dataloader_class(
+            nsynth_dataset, batch_size=args.batch_size,
+            num_workers=args.num_workers, shuffle=True,
+            pin_memory=True)
+
+        validation_loader = dataloader_class(nsynth_validation_dataset,
                                        batch_size=args.batch_size,
                                        num_workers=args.num_workers,
-                                       shuffle=True)
+                                             shuffle=True, pin_memory=True
+                                             )
 
         in_channel = 2
 
