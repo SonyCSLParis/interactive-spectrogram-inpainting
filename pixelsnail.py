@@ -5,6 +5,7 @@
 
 # Borrowed from https://github.com/neocxi/pixelsnail-public and ported it to PyTorch
 
+from typing import Iterable, Mapping, Union, Optional
 from math import sqrt
 from functools import partial, lru_cache
 
@@ -154,7 +155,8 @@ class GatedResBlock(nn.Module):
 
         if condition_dim > 0:
             # self.condition = nn.Linear(condition_dim, in_channel * 2, bias=False)
-            self.condition = WNConv2d(condition_dim, in_channel * 2, 1, bias=False)
+            self.condition = WNConv2d(condition_dim, in_channel * 2, 1,
+                                      bias=False)
 
         self.gate = nn.GLU(1)
 
@@ -193,7 +195,8 @@ def causal_mask(size):
 
 
 class CausalAttention(nn.Module):
-    def __init__(self, query_channel, key_channel, channel, n_head=8, dropout=0.1):
+    def __init__(self, query_channel: int, key_channel: int, channel: int,
+                 n_head: int = 8, dropout=0.1):
         super().__init__()
 
         self.query = wn_linear(query_channel, channel)
@@ -205,7 +208,7 @@ class CausalAttention(nn.Module):
 
         self.dropout = nn.Dropout(dropout)
 
-    def forward(self, query, key):
+    def forward(self, query: torch.Tensor, key: torch.Tensor):
         batch, _, height, width = key.shape
 
         def reshape(input):
@@ -237,13 +240,13 @@ class CausalAttention(nn.Module):
 class PixelBlock(nn.Module):
     def __init__(
         self,
-        in_channel,
-        channel,
-        kernel_size,
-        n_res_block,
-        attention=True,
-        dropout=0.1,
-        condition_dim=0,
+        in_channel: int,
+        channel: int,
+        kernel_size: int,
+        n_res_block: int,
+        attention: bool = True,
+        dropout: float = 0.1,
+        condition_dim: int = 0,
     ):
         super().__init__()
 
@@ -273,7 +276,8 @@ class PixelBlock(nn.Module):
             )
 
             self.causal_attention = CausalAttention(
-                in_channel + 2, in_channel * 2 + 2, in_channel // 2, dropout=dropout
+                in_channel + 2, in_channel * 2 + 2, in_channel // 2,
+                dropout=dropout
             )
 
             self.out_resblock = GatedResBlock(
@@ -283,11 +287,11 @@ class PixelBlock(nn.Module):
                 auxiliary_channel=in_channel // 2,
                 dropout=dropout,
             )
-
         else:
             self.out = WNConv2d(in_channel + 2, in_channel, 1)
 
-    def forward(self, input, background, condition=None):
+    def forward(self, input: torch.Tensor, background: torch.Tensor,
+                condition: Optional[torch.Tensor] = None):
         out = input
 
         for resblock in self.resblocks:
@@ -300,7 +304,6 @@ class PixelBlock(nn.Module):
             query = self.query_resblock(query_cat)
             attn_out = self.causal_attention(query, key)
             out = self.out_resblock(out, attn_out)
-
         else:
             bg_cat = torch.cat([out, background], 1)
             out = self.out(bg_cat)
@@ -309,36 +312,39 @@ class PixelBlock(nn.Module):
 
 
 class CondResNet(nn.Module):
-    def __init__(self, in_channel, channel, kernel_size, n_res_block):
+    def __init__(self, in_channel: int, channel: int, kernel_size: int,
+                 n_res_block: int):
         super().__init__()
 
-        blocks = [WNConv2d(in_channel, channel, kernel_size, padding=kernel_size // 2)]
+        blocks = [WNConv2d(in_channel, channel, kernel_size,
+                           padding=kernel_size // 2)
+                  ]
 
         for i in range(n_res_block):
             blocks.append(GatedResBlock(channel, channel, kernel_size))
 
         self.blocks = nn.Sequential(*blocks)
 
-    def forward(self, input):
+    def forward(self, input: torch.Tensor):
         return self.blocks(input)
 
 
 class PixelSNAIL(nn.Module):
     def __init__(
         self,
-        shape,
-        n_class,
-        channel,
-        kernel_size,
-        n_block,
-        n_res_block,
-        res_channel,
-        attention=True,
-        dropout=0.1,
-        n_cond_res_block=0,
-        cond_res_channel=0,
-        cond_res_kernel=3,
-        n_out_res_block=0,
+        shape: Iterable[int],
+        n_class: int,
+        channel: int,
+        kernel_size: int,
+        n_block: int,
+        n_res_block: int,
+        res_channel: int,
+        attention: bool = True,
+        dropout: float = 0.1,
+        n_cond_res_block: int = 0,
+        cond_res_channel: int = 0,
+        cond_res_kernel: int = 3,
+        n_out_res_block: int = 0,
     ):
         super().__init__()
 
@@ -394,7 +400,9 @@ class PixelSNAIL(nn.Module):
 
         self.out = nn.Sequential(*out)
 
-    def forward(self, input, condition=None, cache=None):
+    def forward(self, input: torch.Tensor,
+                condition: Optional[torch.Tensor] = None,
+                cache: Optional[Mapping[str, torch.Tensor]] = None):
         if cache is None:
             cache = {}
         batch, height, width = input.shape
@@ -411,7 +419,6 @@ class PixelSNAIL(nn.Module):
             if 'condition' in cache:
                 condition = cache['condition']
                 condition = condition[:, :, :height, :]
-
             else:
                 condition = (
                     F.one_hot(condition, self.n_class)
