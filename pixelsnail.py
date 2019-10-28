@@ -8,6 +8,8 @@
 from typing import Iterable, Mapping, Union, Optional
 from math import sqrt
 from functools import partial, lru_cache
+import pathlib
+import json
 
 import numpy as np
 import torch
@@ -346,29 +348,52 @@ class PixelSNAIL(nn.Module):
         cond_res_kernel: int = 3,
         n_out_res_block: int = 0,
     ):
-        super().__init__()
-
-        height, width = shape
+        self.shape = shape
 
         self.n_class = n_class
+        self.channel = channel
 
         if kernel_size % 2 == 0:
-            kernel = kernel_size + 1
-
+            self.kernel_size = kernel_size + 1
         else:
-            kernel = kernel_size
+            self.kernel_size = kernel_size
 
+        self.n_block = n_block
+        self.n_res_block = n_res_block
+        self.res_channel = res_channel
+        self.attention = attention
+        self.dropout = dropout
+        self.n_cond_res_block = n_cond_res_block
+        self.cond_res_channel = cond_res_channel
+        self.cond_res_kernel = cond_res_kernel
+        self.n_out_res_block = n_out_res_block
+
+        self._instantiation_parameters = self.__dict__.copy()
+
+        super().__init__()
+
+        self.height, self.width = self.shape
         self.horizontal = CausalConv2d(
-            n_class, channel, [kernel // 2, kernel], padding='down'
+            self.n_class, self.channel,
+            [self.kernel_size // 2, self.kernel_size], padding='down'
         )
         self.vertical = CausalConv2d(
-            n_class, channel, [(kernel + 1) // 2, kernel // 2], padding='downright'
+            self.n_class, self.channel,
+            [(self.kernel_size + 1) // 2, self.kernel_size // 2], padding='downright'
         )
 
-        coord_x = (torch.arange(height).float() - height / 2) / height
-        coord_x = coord_x.view(1, 1, height, 1).expand(1, 1, height, width)
-        coord_y = (torch.arange(width).float() - width / 2) / width
-        coord_y = coord_y.view(1, 1, 1, width).expand(1, 1, height, width)
+        coord_x = (torch.arange(self.height).float() - self.height / 2
+                   ) / self.height
+        coord_x = (coord_x
+                   .view(1, 1, self.height, 1)
+                   .expand(1, 1, self.height, self.width)
+                   )
+        coord_y = (torch.arange(self.width).float() - self.width / 2
+                   ) / self.width
+        coord_y = (coord_y
+                   .view(1, 1, 1, self.width)
+                   .expand(1, 1, self.height, self.width)
+                   )
         self.register_buffer('background', torch.cat([coord_x, coord_y], 1))
 
         self.blocks = nn.ModuleList()
@@ -376,27 +401,29 @@ class PixelSNAIL(nn.Module):
         for i in range(n_block):
             self.blocks.append(
                 PixelBlock(
-                    channel,
-                    res_channel,
-                    kernel_size,
-                    n_res_block,
-                    attention=attention,
-                    dropout=dropout,
-                    condition_dim=cond_res_channel,
+                    self.channel,
+                    self.res_channel,
+                    self.kernel_size,
+                    self.n_res_block,
+                    attention=self.attention,
+                    dropout=self.dropout,
+                    condition_dim=self.cond_res_channel,
                 )
             )
 
         if n_cond_res_block > 0:
             self.cond_resnet = CondResNet(
-                n_class, cond_res_channel, cond_res_kernel, n_cond_res_block
+                self.n_class, self.cond_res_channel,
+                self.cond_res_kernel, self.n_cond_res_block
             )
 
         out = []
 
-        for i in range(n_out_res_block):
-            out.append(GatedResBlock(channel, res_channel, 1))
+        for i in range(self.n_out_res_block):
+            out.append(GatedResBlock(self.channel, self.res_channel, 1))
 
-        out.extend([nn.ELU(inplace=True), WNConv2d(channel, n_class, 1)])
+        out.extend([nn.ELU(inplace=True),
+                    WNConv2d(self.channel, self.n_class, 1)])
 
         self.out = nn.Sequential(*out)
 
@@ -436,3 +463,37 @@ class PixelSNAIL(nn.Module):
         out = self.out(out)
 
         return out, cache
+
+    @classmethod
+    def from_parameters_and_weights(
+            cls, parameters_json_path: pathlib.Path,
+            model_weights_checkpoint_path: pathlib.Path,
+            device: Union[str, torch.device] = 'cpu') -> 'PixelSNAIL':
+        """Re-instantiate a stored model using init parameters and weights
+
+        Arguments:
+            parameters_json_path (pathlib.Path)
+                Path to the a json file containing the keyword arguments used
+                to initialize the object
+            model_weights_checkpoint_path (pathlib.Path)
+                Path to a model weights checkpoint file as created by
+                torch.save
+            device (str or torch.device, default 'cpu')
+                Device on which to load the stored weights
+        """
+        with open(parameters_json_path, 'r') as f:
+            parameters = json.load(f)
+            snail = cls(**parameters)
+
+        model_state_dict = torch.load(model_weights_checkpoint_path,
+                                      map_location=device)
+        if set(model_state_dict.keys()) == set(['model', 'args']):
+            model_state_dict = model_state_dict['model']
+        snail.load_state_dict(model_state_dict)
+        return snail
+
+    def store_instantiation_parameters(self, path: pathlib.Path) -> None:
+        """Store the parameters used to create this instance as JSON"""
+        with open(path, 'w') as f:
+            json.dump(self._instantiation_parameters, f)
+
