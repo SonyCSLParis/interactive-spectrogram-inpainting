@@ -1,5 +1,7 @@
 from typing import Optional, Iterable, Union, List, Mapping
 import numpy as np
+import pathlib
+import json
 
 import torch
 from torch import nn
@@ -102,7 +104,7 @@ class Quantize(nn.Module):
 
 
 class ResBlock(nn.Module):
-    def __init__(self, in_channel, channel):
+    def __init__(self, in_channel: int, channel: int):
         super().__init__()
 
         self.conv = nn.Sequential(
@@ -123,10 +125,41 @@ class ResBlock(nn.Module):
 
 class Encoder(nn.Module):
     def __init__(self, in_channel: int, channel: int, n_res_block: int,
-                 n_res_channel: int, stride: int, groups: int = 1):
+                 n_res_channel: int, resolution_factor: int, groups: int = 1):
         super().__init__()
 
-        if stride == 4:
+        # downsampling module
+        if resolution_factor == 16:
+            blocks = [
+                nn.Conv2d(in_channel, channel // 4, 4, stride=2,
+                          padding=1, groups=groups),
+                nn.ReLU(inplace=True),
+                nn.Conv2d(channel // 4, channel // 2, 4, stride=2, padding=1,
+                          groups=groups),
+                nn.ReLU(inplace=True),
+                nn.Conv2d(channel // 2, 3 * channel // 4, 4, stride=2,
+                          padding=1, groups=groups),
+                nn.ReLU(inplace=True),
+                nn.Conv2d(3 * channel // 4, channel, 4, stride=2, padding=1,
+                          groups=groups),
+                nn.ReLU(inplace=True),
+                nn.Conv2d(channel, channel, 3, padding=1, groups=groups),
+            ]
+        elif resolution_factor == 8:
+            blocks = [
+                nn.Conv2d(in_channel, channel // 2, 4, stride=2, padding=1,
+                          groups=groups),
+                nn.ReLU(inplace=True),
+                nn.Conv2d(channel // 2, channel // 2, 4, stride=2, padding=1,
+                          groups=groups),
+                nn.ReLU(inplace=True),
+                nn.Conv2d(
+                    channel // 2, channel, 4, stride=2, padding=1,
+                    groups=groups),
+                nn.ReLU(inplace=True),
+                nn.Conv2d(channel, channel, 3, padding=1, groups=groups),
+            ]
+        elif resolution_factor == 4:
             blocks = [
                 nn.Conv2d(in_channel, channel // 2, 4, stride=2, padding=1,
                           groups=groups),
@@ -137,14 +170,15 @@ class Encoder(nn.Module):
                 nn.Conv2d(channel, channel, 3, padding=1,
                           groups=groups),
             ]
-
-        elif stride == 2:
+        elif resolution_factor == 2:
             blocks = [
                 nn.Conv2d(in_channel, channel // 2, 4, stride=2, padding=1,
                           groups=groups),
                 nn.ReLU(inplace=True),
                 nn.Conv2d(channel // 2, channel, 3, padding=1, groups=groups),
             ]
+        else:
+            raise ValueError(f"Unexpected resolution factor {resolution_factor}")
 
         for i in range(n_res_block):
             blocks.append(ResBlock(channel, n_res_channel))
@@ -159,7 +193,7 @@ class Encoder(nn.Module):
 
 class Decoder(nn.Module):
     def __init__(self, in_channel: int, out_channel: int, channel: int,
-                 n_res_block: int, n_res_channel: int, stride: int,
+                 n_res_block: int, n_res_channel: int, resolution_factor: int,
                  groups: int = 1,
                  output_activation: Optional[nn.Module] = None):
         super().__init__()
@@ -171,7 +205,42 @@ class Decoder(nn.Module):
 
         blocks.append(nn.ReLU(inplace=True))
 
-        if stride == 4:
+        # upsampling module
+        if resolution_factor == 16:
+            blocks.extend(
+                [
+                    nn.ConvTranspose2d(channel, 3 * channel // 4, 4, stride=2,
+                                       padding=1, groups=groups),
+                    nn.ReLU(inplace=True),
+                    nn.ConvTranspose2d(
+                        3 * channel // 4, channel // 2, 4, stride=2, padding=1,
+                        groups=groups),
+                    nn.ReLU(inplace=True),
+                    nn.ConvTranspose2d(
+                        channel // 2, channel // 4, 4, stride=2, padding=1,
+                        groups=groups),
+                    nn.ReLU(inplace=True),
+                    nn.ConvTranspose2d(
+                        channel // 4, out_channel, 4, stride=2, padding=1,
+                        groups=groups)
+                ]
+            )
+        elif resolution_factor == 8:
+            blocks.extend(
+                [
+                    nn.ConvTranspose2d(channel, channel // 2, 4, stride=2,
+                                       padding=1, groups=groups),
+                    nn.ReLU(inplace=True),
+                    nn.ConvTranspose2d(
+                        channel // 2, channel // 2, 4, stride=2, padding=1,
+                        groups=groups),
+                    nn.ReLU(inplace=True),
+                    nn.ConvTranspose2d(
+                        channel // 2, out_channel, 4, stride=2, padding=1,
+                        groups=groups)
+                ]
+            )
+        elif resolution_factor == 4:
             blocks.extend(
                 [
                     nn.ConvTranspose2d(channel, channel // 2, 4, stride=2,
@@ -182,12 +251,13 @@ class Decoder(nn.Module):
                         groups=groups),
                 ]
             )
-
-        elif stride == 2:
+        elif resolution_factor == 2:
             blocks.append(
                 nn.ConvTranspose2d(channel, out_channel, 4, stride=2,
                                    padding=1, groups=groups)
             )
+        else:
+            raise ValueError(f"Unexpected stride value {stride}")
 
         if output_activation is not None:
             blocks.append(output_activation)
@@ -210,60 +280,123 @@ class VQVAE(nn.Module):
             number of residual blocks in the encoder/decoder
         n_res_channel (int):
             number of channels in the residual blocks
-        embed_dim (int):
+        embed_dim (int or Iterable[int]):
             dimension of the latent codes
         n_embed (int):
             size of the latent book (number of different latent codes to learn)
         decay (float, 0 =< decay =< 1):
             decay rate of the latent codes
+        resolution_factors (Mapping[str, int]):
+            associates each code layer to its down/up-sampling factor.
+            NOTE: the factors are meant respective to the previous
+            code layer, e.g. for a two-level VA-VAE, with top obtained
+            by further downsampling bottom, the resolution_factors['top']
+            is the down/up-sampling factor from the bottom layer to the top
+            layer.
     """
     def __init__(
         self,
         in_channel: int = 3,
-        channel: int = 128,
+        num_hidden_channels: int = 128,
         n_res_block: int = 2,
-        n_res_channel: int = 32,
+        num_residual_channels: int = 32,
         embed_dim: int = 64,
-        n_embed: int = 512,
+        num_embeddings: Union[int, Iterable[int]] = 512,
         decay: float = 0.99,
         groups: int = 1,
+        resolution_factors: Mapping[str, int] = {
+            'bottom': 4,
+            'top': 2,
+        },
+        embeddings_initial_variance: float = 1,
         decoder_output_activation: Optional[nn.Module] = None,
         dataloader_for_gansynth_normalization: Optional[torch.utils.data.DataLoader] = None,
-        normalizer_statistics: Optional[object] = None
+        normalizer_statistics: Optional[object] = None,
+        corruption_weights: Mapping[str, Optional[List[float]]] = {'top': None,
+                                                                   'bottom': None}
     ):
         super().__init__()
 
-        self.enc_b = Encoder(in_channel, channel, n_res_block, n_res_channel,
-                             stride=4, groups=groups)
-        self.enc_t = Encoder(channel, channel, n_res_block, n_res_channel,
-                             stride=2, groups=groups)
-        self.quantize_conv_t = nn.Conv2d(channel, embed_dim, 1)
-        self.quantize_t = Quantize(embed_dim, n_embed, decay=decay)
+        # store instantiation parameters
+        self.in_channel = in_channel
+        self.num_hidden_channels = num_hidden_channels
+        self.n_res_block = n_res_block
+        self.num_residual_channels = num_residual_channels
+        self.embed_dim = embed_dim
+        self.num_embeddings = num_embeddings
+        self.decay = decay
+        self.groups = groups
+        self.resolution_factors = resolution_factors
+        self.embeddings_initial_variance = embeddings_initial_variance
+        self.decoder_output_activation = decoder_output_activation
+        self.dataloader_for_gansynth_normalization = dataloader_for_gansynth_normalization
+        self.normalizer_statistics = normalizer_statistics
+        self.corruption_weights = corruption_weights
+
+        self._instantiation_parameters = self.__dict__.copy()
+
+        self.enc_b = Encoder(
+            self.in_channel, self.num_hidden_channels, self.n_res_block,
+            self.num_residual_channels,
+            resolution_factor=self.resolution_factors['bottom'],
+            groups=self.groups)
+        self.enc_t = Encoder(
+            self.num_hidden_channels, self.num_hidden_channels,
+            self.n_res_block, self.num_residual_channels,
+            resolution_factor=self.resolution_factors['top'],
+            groups=self.groups)
+        try:
+            self.n_embed_t, self.n_embed_b = self.num_embeddings
+        except TypeError:
+            # provided `num_embeddings` is no tuple, assumed to be a single int
+            # use this same value for both code layers
+            self.n_embed_t, self.n_embed_b = [self.num_embeddings] * 2
+        self.quantize_conv_t = nn.Conv2d(self.num_hidden_channels,
+                                         self.embed_dim, 1)
+        self.quantize_t = Quantize(
+            self.embed_dim, self.n_embed_t, decay=self.decay,
+            corruption_weights=self.corruption_weights['top'],
+            embeddings_initial_variance=self.embeddings_initial_variance)
         self.dec_t = Decoder(
-            embed_dim, embed_dim, channel, n_res_block, n_res_channel,
-            stride=2, groups=groups
+            self.embed_dim, self.embed_dim, self.num_hidden_channels,
+            self.n_res_block, self.num_residual_channels, groups=self.groups,
+            resolution_factor=self.resolution_factors['top']
         )
-        self.quantize_conv_b = nn.Conv2d(embed_dim + channel, embed_dim, 1)
-        self.quantize_b = Quantize(embed_dim, n_embed, decay=decay)
-        self.upsample_t = nn.ConvTranspose2d(
-            embed_dim, embed_dim, 4, stride=2, padding=1
+        self.quantize_conv_b = nn.Conv2d(
+            self.embed_dim + self.num_hidden_channels,
+            self.embed_dim, 1)
+        self.quantize_b = Quantize(
+            self.embed_dim, self.n_embed_b, decay=self.decay,
+            corruption_weights=self.corruption_weights['bottom'],
+            embeddings_initial_variance=self.embeddings_initial_variance)
+
+        # upsample from 'top' layer back to 'bottom' layer resolution
+        upsampling_layers = []
+        num_upsampling_layers = int(np.log2(self.resolution_factors['top']))
+        for i in range(num_upsampling_layers):
+            upsampling_layers.append(
+                nn.ConvTranspose2d(
+                    self.embed_dim, self.embed_dim, kernel_size=4,
+                    stride=2, padding=1)
         )
+        self.upsample_top_to_bottom = nn.Sequential(*upsampling_layers)
+
         self.dec = Decoder(
-            embed_dim + embed_dim,
-            in_channel,
-            channel,
-            n_res_block,
-            n_res_channel,
-            stride=4,
-            output_activation=decoder_output_activation,
-            groups=groups
+            self.embed_dim + self.embed_dim,
+            self.in_channel,
+            self.num_hidden_channels,
+            self.n_res_block,
+            self.num_residual_channels,
+            resolution_factor=self.resolution_factors['bottom'],
+            output_activation=self.decoder_output_activation,
+            groups=self.groups
         )
 
         self.use_gansynth_normalization = (
-            dataloader_for_gansynth_normalization is not None
-            or normalizer_statistics is not None)
-        self.dataloader = dataloader_for_gansynth_normalization
-        self.normalizer_statistics = normalizer_statistics
+            self.dataloader_for_gansynth_normalization is not None
+            or self.normalizer_statistics is not None)
+        self.dataloader = self.dataloader_for_gansynth_normalization
+        self.normalizer_statistics = self.normalizer_statistics
         if self.normalizer_statistics:
             self.data_normalizer = DataNormalizer(**self.normalizer_statistics)
         elif self.dataloader:
@@ -302,8 +435,8 @@ class VQVAE(nn.Module):
                 perplexity_t, perplexity_b)
 
     def decode(self, quant_t, quant_b):
-        upsample_t = self.upsample_t(quant_t)
-        quant = torch.cat([upsample_t, quant_b], 1)
+        upsample_top_to_bottom = self.upsample_top_to_bottom(quant_t)
+        quant = torch.cat([upsample_top_to_bottom, quant_b], 1)
         dec = self.dec(quant)
 
         return dec
@@ -317,6 +450,39 @@ class VQVAE(nn.Module):
         dec = self.decode(quant_t, quant_b)
 
         return dec
+
+    @classmethod
+    def from_parameters_and_weights(
+            cls, parameters_json_path: pathlib.Path,
+            model_weights_checkpoint_path: pathlib.Path,
+            device: Union[str, torch.device] = 'cpu') -> 'VQVAE':
+        """Re-instantiate a stored model using init parameters and weights
+
+        Arguments:
+            parameters_json_path (pathlib.Path)
+                Path to the a json file containing the keyword arguments used
+                to initialize the object
+            model_weights_checkpoint_path (pathlib.Path)
+                Path to a model weights checkpoint file as created by
+                torch.save
+            device (str or torch.device, default 'cpu')
+                Device on which to load the stored weights
+        """
+        with open(parameters_json_path, 'r') as f:
+            parameters = json.load(f)
+            vqvae = cls(**parameters)
+
+        model_state_dict = torch.load(model_weights_checkpoint_path,
+                                      map_location=device)
+        if set(model_state_dict.keys()) == set(['model', 'args']):
+            model_state_dict = model_state_dict['model']
+        vqvae.load_state_dict(model_state_dict)
+        return vqvae
+
+    def store_instantiation_parameters(self, path: pathlib.Path) -> None:
+        """Store the parameters used to create this instance as JSON"""
+        with open(path, 'w') as f:
+            json.dump(self._instantiation_parameters, f)
 
 
 class InferenceVQVAE(object):
