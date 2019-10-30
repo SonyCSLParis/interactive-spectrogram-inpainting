@@ -406,13 +406,13 @@ class VQVAE(nn.Module):
         if self.use_gansynth_normalization:
             input = self.data_normalizer.normalize(input)
 
-        quant_t, quant_b, diff, *_, perplexity_t, perplexity_b = self.encode(
+        quant_t, quant_b, diff, id_t, id_b, perplexity_t, perplexity_b = self.encode(
             input)
         dec = self.decode(quant_t, quant_b)
 
         if self.use_gansynth_normalization:
             dec = self.data_normalizer.denormalize(dec)
-        return dec, diff, perplexity_t, perplexity_b
+        return dec, diff, perplexity_t, perplexity_b, id_t, id_b
 
     def encode(self, input):
         enc_b = self.enc_b(input)
