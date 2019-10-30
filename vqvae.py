@@ -378,7 +378,7 @@ class VQVAE(nn.Module):
                 nn.ConvTranspose2d(
                     self.embed_dim, self.embed_dim, kernel_size=4,
                     stride=2, padding=1)
-        )
+            )
         self.upsample_top_to_bottom = nn.Sequential(*upsampling_layers)
 
         self.dec = Decoder(
@@ -486,9 +486,11 @@ class VQVAE(nn.Module):
 
 
 class InferenceVQVAE(object):
-    def __init__(self, vqvae: VQVAE, device: str):
+    def __init__(self, vqvae: VQVAE, device: str, hop_length: int, n_fft: int):
         self.vqvae = vqvae
         self.device = device
+        self.hop_length = hop_length
+        self.n_fft = n_fft
 
     def sample_reconstructions(self, dataloader):
         self.vqvae.eval()
@@ -502,7 +504,7 @@ class InferenceVQVAE(object):
         return mag_and_IF_batch, reconstructed_mag_and_IF_batch
 
     def mag_and_IF_to_audio(self, mag_and_IF: torch.Tensor,
-                            use_mel_frequency: bool = True):
+                            use_mel_frequency: bool = True) -> torch.Tensor:
         input_is_batch = True
         if mag_and_IF.ndim == 3:
             # a single sample was provided, wrap it as a batch
@@ -516,24 +518,19 @@ class InferenceVQVAE(object):
 
         if use_mel_frequency:
             spec_to_audio = (GANsynth_pytorch.spectrograms_helper
-                             .mel_mag_and_IF_to_audio)
+                             .mel_logmag_and_IF_to_audio)
         else:
             spec_to_audio = (GANsynth_pytorch.spectrograms_helper
-                             .mag_and_IF_to_audio)
+                             .logmag_and_IF_to_audio)
 
         channel_dimension = 1
         mag_batch = mag_and_IF.select(channel_dimension, 0
-                                      ).data.cpu().numpy()
+                                      )
         IF_batch = mag_and_IF.select(channel_dimension, 1
-                                     ).data.cpu().numpy()
+                                     )
 
-        audios = []
-        for mag, IF in zip(mag_batch, IF_batch):
-            audio_np = spec_to_audio(mag, IF)
-            audio = torch.from_numpy(audio_np)
-            audios.append(audio)
-        if input_is_batch:
-            return torch.cat([audio.unsqueeze(0) for audio in audios],
-                             0)
-        else:
-            return audios[0]
+        audio_batch = spec_to_audio(mag_batch, IF_batch,
+                                    hop_length=self.hop_length,
+                                    n_fft=self.n_fft)
+
+        return audio_batch
