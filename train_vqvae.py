@@ -1,7 +1,9 @@
+from datetime import datetime
 import uuid
 import argparse
 import pathlib
 import pickle
+import json
 from typing import Optional
 from tqdm import tqdm
 import numpy as np
@@ -19,8 +21,7 @@ from scheduler import CycleScheduler
 
 from nsynth_dataset import NSynthH5Dataset
 from GANsynth_pytorch.pytorch_nsynth_lib.nsynth import (
-    NSynth, get_mel_spectrogram_and_IF,
-    WavToSpectrogramDataLoader)
+    NSynth, WavToSpectrogramDataLoader)
 import GANsynth_pytorch.utils.plots as gansynthplots
 
 import matplotlib as mpl
@@ -42,11 +43,12 @@ def train(epoch: int, loader: DataLoader, model: nn.Module,
           device: str,
           inference_vqvae: InferenceVQVAE,
           run_id: str,
-          disable_image_dumps: bool = False,
+          enable_image_dumps: bool = False,
           tensorboard_writer: Optional[SummaryWriter] = None,
           tensorboard_scalar_interval_epochs: int = 1,
           tensorboard_audio_interval_epochs: int = 5,
           tensorboard_num_audio_samples: int = 10,
+          dry_run: bool = False
           ) -> None:
     loader = tqdm(loader, position=1)
     status_bar = tqdm(total=0, position=0, bar_format='{desc}')
@@ -58,14 +60,15 @@ def train(epoch: int, loader: DataLoader, model: nn.Module,
 
     mse_sum = 0
     mse_n = 0
+    num_samples_seen = 0
 
     model.train()
-    for i, (img, pitch) in enumerate(loader):
+    for i, (img, _) in enumerate(loader):
         model.zero_grad()
 
         img = img.to(device)
 
-        out, latent_loss, perplexity_t, perplexity_b = model(img)
+        out, latent_loss, perplexity_t, perplexity_b, *_ = model(img)
         recon_loss = criterion(out, img)
         latent_loss = latent_loss.mean()
         loss = recon_loss + latent_loss_weight * latent_loss
@@ -75,8 +78,10 @@ def train(epoch: int, loader: DataLoader, model: nn.Module,
             scheduler.step()
         optimizer.step()
 
-        mse_sum += recon_loss.item() * img.shape[0]
-        mse_n += img.shape[0]
+        batch_size = img.shape[0]  # could vary if e.g. drop-last=False in loader
+        mse_batch = recon_loss.item()
+        mse_sum += mse_batch * batch_size
+        num_samples_seen += batch_size
 
         lr = optimizer.param_groups[0]['lr']
 
@@ -85,8 +90,8 @@ def train(epoch: int, loader: DataLoader, model: nn.Module,
         status_bar.set_description_str(
             (
                 f'epoch: {epoch + 1}; '
-                f'avg mse: {mse_sum / mse_n:.4f}; latent: {batch_latent_loss:.4f}; '
-                f'perplexity_bottom: {perplexity_b:.4f}; perplexity_top: {perplexity_t:.4f}'
+                f'avg mse: {mse_sum / num_samples_seen:.4f}; mse: {mse_batch:.4f}; latent: {batch_latent_loss:.4f}; '
+                f'perpl_bottom: {perplexity_b.mean():.4f}; perpl_top: {perplexity_t.mean():.4f}'
             )
         )
         if tensorboard_writer is not None:
@@ -101,27 +106,25 @@ def train(epoch: int, loader: DataLoader, model: nn.Module,
                                           batch_latent_loss,
                                           num_samples_seen)
             tensorboard_writer.add_scalar('training/perplexity_top',
-                                          perplexity_t,
+                                          perplexity_t.mean(),
                                           num_samples_seen)
             tensorboard_writer.add_scalar('training/perplexity_bottom',
-                                          perplexity_b,
+                                          perplexity_b.mean(),
                                           num_samples_seen)
 
-        if not disable_image_dumps and i % 100 == 0:
+        if enable_image_dumps and i % 100 == 0:
             model.eval()
 
             sample = img[:image_dump_sample_size]
-
-            with torch.no_grad():
-                out, *_ = model(sample)
+            sample_out = out[:image_dump_sample_size]
 
             channel_dim = 1
             for channel_index, channel_name in enumerate(
                     ['spectrogram', 'instantaneous_frequency']):
                 sample_channel = sample.select(channel_dim, channel_index
                                                ).unsqueeze(channel_dim)
-                out_channel = out.select(channel_dim, channel_index
-                                         ).unsqueeze(channel_dim)
+                out_channel = sample_out.select(channel_dim, channel_index
+                                                ).unsqueeze(channel_dim)
                 utils.save_image(
                     torch.cat([sample_channel, out_channel,
                                (sample_channel-out_channel).abs()], 0),
@@ -134,9 +137,15 @@ def train(epoch: int, loader: DataLoader, model: nn.Module,
                 )
 
             model.train()
+        if dry_run:
+            break
+
+    if tensorboard_writer is not None:
+        tensorboard_writer.flush()
 
 
-def evaluate(loader: DataLoader, model: nn.Module, device: str):
+def evaluate(loader: DataLoader, model: nn.Module, device: str,
+             dry_run: bool = False):
     with torch.no_grad():
         loader = tqdm(loader, desc='validation')
 
@@ -160,10 +169,12 @@ def evaluate(loader: DataLoader, model: nn.Module, device: str):
             loss = recon_loss + latent_loss_weight * latent_loss
 
             mse_sum += recon_loss * img.shape[0]
-            perplexity_t_sum += perplexity_t
-            perplexity_b_sum += perplexity_b
+            perplexity_t_sum += perplexity_t.mean()
+            perplexity_b_sum += perplexity_b.mean()
             mse_n += img.shape[0]
             latent_loss_total += latent_loss
+            if args.dry_run:
+                break
 
         mse_average = mse_sum.item() / mse_n
         latent_loss_average = latent_loss_total.item() / len(loader)
@@ -190,8 +201,8 @@ if __name__ == '__main__':
     parser.add_argument('--resolution_factors', action=StoreDictKeyPair,
                         default={'top': 2, 'bottom': 2})
     parser.add_argument('--num_embeddings', type=int, default=512)
-    parser.add_argument('--hidden_channels', type=int, default=128)
-    parser.add_argument('--residual_channels', type=int, default=32)
+    parser.add_argument('--num_hidden_channels', type=int, default=128)
+    parser.add_argument('--num_residual_channels', type=int, default=32)
     parser.add_argument('--epoch', type=int, default=560)
     parser.add_argument('--lr', type=float, default=3e-4)
     parser.add_argument('--dataset', type=str, choices=['nsynth', 'imagenet'])
@@ -204,13 +215,26 @@ if __name__ == '__main__':
                         help='Number of workers for the Dataloaders')
     parser.add_argument('--train_dataset_path', type=str)
     parser.add_argument('--validation_dataset_path', type=str)
-    parser.add_argument('--test', action='store_true')
+    parser.add_argument('--enable_image_dumps', action='store_true',
+                        help=('Dump png pictures of the spectrograms during training.'
+                              'WARNING: Takes up a lot of space!'))
+    parser.add_argument('--disable_writes_to_disk', action='store_true')
+    parser.add_argument('--disable_tensorboard', action='store_true')
+    parser.add_argument('--dry_run', action='store_true',
+                        help=('Test run performing only one step of training'
+                              'and evaluation'))
     parser.add_argument('--input_normalization', action='store_true')
     parser.add_argument('--precomputed_normalization_statistics', type=str,
                         default=None,
                         help=('Path to a pickle file containing the values'
                               'for the GANSynth_pytorch.DataNormalizer object')
                         )
+    parser.add_argument('--corrupt_codes', choices=['bottom', 'top', 'both'],
+                        type=str,
+                        help='Whether to corrupt codes using random +/- 1 noise')
+    parser.add_argument('--embeddings_initial_variance', type=float, default=1)
+    parser.add_argument('--resume_training_from', type=str,
+                        help='Path to a checkpoint to resume training from')
 
     args = parser.parse_args()
 
@@ -218,11 +242,11 @@ if __name__ == '__main__':
                                    or args.precomputed_normalization_statistics
                                    )
 
-    run_ID = str(uuid.uuid4())[:6]
+    run_ID = datetime.now().strftime('%Y%m%d-%H%M%S-') + str(uuid.uuid4())[:6]
 
     print(args)
 
-    device = 'cuda'
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
     train_dataset_path = pathlib.Path(args.train_dataset_path)
     validation_dataset_path = pathlib.Path(args.validation_dataset_path)
@@ -285,8 +309,8 @@ if __name__ == '__main__':
             pin_memory=True)
 
         validation_loader = dataloader_class(nsynth_validation_dataset,
-                                       batch_size=args.batch_size,
-                                       num_workers=args.num_workers,
+                                             batch_size=args.batch_size,
+                                             num_workers=args.num_workers,
                                              shuffle=True, pin_memory=True
                                              )
 
@@ -305,11 +329,32 @@ if __name__ == '__main__':
 
     print("Initializing model")
 
+    corruption_weights_base = [0.1, 0.8, 0.1]
+
+    corruption_weights = {
+        'top': None,
+        'bottom': None
+    }
+    if args.corrupt_codes is not None:
+        if args.corrupt_codes == 'both':
+            corruption_weights = {
+                'bottom': corruption_weights_base,
+                'top': corruption_weights_base
+            }
+        elif args.corrupt_codes == 'top' or args.corrupt_codes == 'bottom':
+            corruption_weights[args.corrupt_codes] = corruption_weights_base
+        else:
+            assert False, "Not permitted by argparse parameters"
+
     vqvae_parameters = {'in_channel': in_channel,
                         'groups': args.groups,
                         'num_embeddings': args.num_embeddings,
                         'num_hidden_channels': args.num_hidden_channels,
                         'num_residual_channels': args.num_residual_channels,
+                        'corruption_weights': corruption_weights,
+                        'embeddings_initial_variance':
+                            args.embeddings_initial_variance,
+                        # 'resume_training_from': args.resume_training_from
                         'resolution_factors': args.resolution_factors
                         }
 
@@ -330,6 +375,7 @@ if __name__ == '__main__':
 
     print_resolution_summary(loader, args.resolution_factors)
 
+    vqvae = VQVAE(dataloader_for_gansynth_normalization=dataloader_for_gansynth_normalization,
                   normalizer_statistics=normalizer_statistics,
                   **vqvae_parameters
                   )
@@ -340,7 +386,20 @@ if __name__ == '__main__':
         data_normalizer.dump_statistics(normalization_statistics_path)
 
     model = nn.DataParallel(vqvae).to(device)
-    inference_vqvae = InferenceVQVAE(model, device)
+
+    start_epoch = 0
+    if args.resume_training_from is not None:
+        import re
+        checkpoint_path = pathlib.Path(args.resume_training_from)
+        epoch_find_regex = '\d+\.pt'
+        start_epoch = int(re.search(epoch_find_regex, checkpoint_path.name
+                                    )[0][:3])
+        model.module.load_state_dict(torch.load(checkpoint_path,
+                                                map_location=device)
+                                     )
+
+    inference_vqvae = InferenceVQVAE(model, device,
+                                     hop_length=HOP_LENGTH, n_fft=N_FFT)
 
     optimizer = optim.Adam(model.parameters(), lr=args.lr)
     scheduler = None
@@ -350,53 +409,63 @@ if __name__ == '__main__':
         )
 
     MAIN_DIR = pathlib.Path(DIRPATH)
-    checkpoints_dir = MAIN_DIR / f'checkpoints/{run_ID}/'
-    os.makedirs(checkpoints_dir, exist_ok=True)
-    with open(checkpoints_dir / 'model_parameters.pkl', 'wb') as f:
-        pickle.dump(vqvae_parameters, f)
+    checkpoints_dir_path = MAIN_DIR / f'checkpoints/{run_ID}/'
+    if not (args.dry_run or args.disable_writes_to_disk):
+        os.makedirs(checkpoints_dir_path, exist_ok=True)
 
-    os.makedirs(MAIN_DIR / f'runs/{run_ID}/', exist_ok=True)
-    os.makedirs(MAIN_DIR / f'samples/{run_ID}/', exist_ok=True)
+        vqvae.store_instantiation_parameters(
+            checkpoints_dir_path / 'model_parameters.json')
 
-    tensorboard_writer = SummaryWriter(MAIN_DIR / f'runs/{run_ID}')
+        os.makedirs(MAIN_DIR / f'samples/{run_ID}/', exist_ok=True)
+
+    tensorboard_writer = None
+    if not (args.disable_tensorboard or args.disable_writes_to_disk):
+        tensorboard_dir_path = MAIN_DIR / f'runs/{run_ID}/'
+        os.makedirs(tensorboard_dir_path, exist_ok=True)
+        tensorboard_writer = SummaryWriter(tensorboard_dir_path)
 
     print("Starting training")
-    for epoch_index in range(args.epoch):
+    for epoch_index in range(start_epoch, args.epoch):
         train(epoch_index, loader, model, optimizer, scheduler, device,
               run_id=run_ID,
-              disable_image_dumps=args.test,
+              enable_image_dumps=args.enable_image_dumps,
               tensorboard_writer=tensorboard_writer,
               tensorboard_audio_interval_epochs=3,
               tensorboard_num_audio_samples=5,
-              inference_vqvae=inference_vqvae)
+              inference_vqvae=inference_vqvae,
+              dry_run=args.dry_run)
 
-        if args.test:
+        if args.disable_writes_to_disk:
             pass
         else:
+            checkpoint_filename = (f'vqvae_{dataset_name}_'
+                                   f'{str(epoch_index + 1).zfill(3)}.pt')
             torch.save(
                     model.module.state_dict(),
-                    MAIN_DIR / f'checkpoints/{run_ID}/vqvae_{dataset_name}_{str(epoch_index + 1).zfill(3)}.pt'
+                    checkpoints_dir_path / checkpoint_filename
             )
 
         # eval on validation set
-        (mse_validation, latent_loss_validation,
-         perplexity_t_validation, perplexity_b_validation) = evaluate(
-            validation_loader, model, device)
+        with torch.no_grad():
+            (mse_validation, latent_loss_validation,
+             perplexity_t_validation, perplexity_b_validation) = evaluate(
+                 validation_loader, model, device, args.dry_run)
 
-        tensorboard_writer.add_scalar('validation/reconstruction_mse',
-                                      mse_validation,
-                                      global_step=epoch_index)
-        tensorboard_writer.add_scalar('validation/latent_loss',
-                                      latent_loss_validation,
-                                      global_step=epoch_index)
-        tensorboard_writer.add_scalar('validation/perplexity_top',
-                                      perplexity_t_validation,
-                                      global_step=epoch_index)
-        tensorboard_writer.add_scalar('validation/perplexity_bottom',
-                                      perplexity_b_validation,
-                                      global_step=epoch_index)
+        if tensorboard_writer is not None and not (
+                args.dry_run or args.disable_writes_to_disk):
+            tensorboard_writer.add_scalar('validation/reconstruction_mse',
+                                          mse_validation,
+                                          global_step=epoch_index)
+            tensorboard_writer.add_scalar('validation/latent_loss',
+                                          latent_loss_validation,
+                                          global_step=epoch_index)
+            tensorboard_writer.add_scalar('validation/perplexity_top',
+                                          perplexity_t_validation,
+                                          global_step=epoch_index)
+            tensorboard_writer.add_scalar('validation/perplexity_bottom',
+                                          perplexity_b_validation,
+                                          global_step=epoch_index)
 
-        if tensorboard_writer is not None:
             # if i+1 % tensorboard_audio_interval_epochs == 0:
             # add audio summaries
             samples, reconstructions = inference_vqvae.sample_reconstructions(
@@ -428,3 +497,5 @@ if __name__ == '__main__':
             tensorboard_writer.add_figure('Originals + Reconstructions (mel-scale, logspec/IF, validation data)',
                                           spec_figure,
                                           epoch_index)
+
+            tensorboard_writer.flush()
