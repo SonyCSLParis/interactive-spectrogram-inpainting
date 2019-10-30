@@ -175,8 +175,20 @@ def evaluate(loader: DataLoader, model: nn.Module, device: str):
 
 
 if __name__ == '__main__':
+    class StoreDictKeyPair(argparse.Action):
+        def __call__(self, parser, namespace, values, option_string=None):
+            my_dict = {}
+            for kv in values.split(","):
+                k, v = kv.split("=")
+                my_dict[str(k)] = int(v)
+            setattr(namespace, self.dest, my_dict)
+
     parser = argparse.ArgumentParser()
     parser.add_argument('--size', type=int, default=256)
+    # parser.add_argument('--strides', nargs='+', type=int, default=[2, 4],
+    #                     choices=[2, 4, 8, 16])
+    parser.add_argument('--resolution_factors', action=StoreDictKeyPair,
+                        default={'top': 2, 'bottom': 2})
     parser.add_argument('--num_embeddings', type=int, default=512)
     parser.add_argument('--hidden_channels', type=int, default=128)
     parser.add_argument('--residual_channels', type=int, default=32)
@@ -296,18 +308,30 @@ if __name__ == '__main__':
     vqvae_parameters = {'in_channel': in_channel,
                         'groups': args.groups,
                         'num_embeddings': args.num_embeddings,
-                        'hidden_channels': args.hidden_channels,
-                        'residual_channels': args.residual_channels
+                        'num_hidden_channels': args.num_hidden_channels,
+                        'num_residual_channels': args.num_residual_channels,
+                        'resolution_factors': args.resolution_factors
                         }
 
-    vqvae = VQVAE(in_channel=in_channel,
-                  channel=args.hidden_channels,
-                  n_res_channel=args.residual_channels,
-                  n_embed=args.num_embeddings,
-                  decoder_output_activation=vqvae_decoder_activation,
-                  dataloader_for_gansynth_normalization=dataloader_for_gansynth_normalization,
+    def print_resolution_summary(loader, resolution_factors):
+        sample = next(iter(loader))[0][0]
+        print(f"Input images shape: {sample.shape}")
+
+        num_channels, height, width = sample.shape
+        total_resolution_factor = 1
+        for layer_name, resolution_factor in resolution_factors.values():
+            total_resolution_factor *= resolution_factor
+            print(f"Layer {layer_name}: ")
+            print(f"\nAdditional downsampling factor {resolution_factor}")
+            C, H, W = sample.shape
+            layer_height = height // total_resolution_factor
+            layer_width = width // total_resolution_factor
+            print(f"\nResolution H={layer_height}, W={layer_width}")
+
+    print_resolution_summary(loader, args.resolution_factors)
+
                   normalizer_statistics=normalizer_statistics,
-                  groups=args.groups,
+                  **vqvae_parameters
                   )
     if dataloader_for_gansynth_normalization is not None:
         # store normalization parameters
