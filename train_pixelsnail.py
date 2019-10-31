@@ -27,19 +27,34 @@ from scheduler import CycleScheduler
 DIRPATH = os.path.dirname(os.path.abspath(__file__))
 
 
+def num_samples_in_loader(loader: torch.utils.data.DataLoader):
+    if loader.drop_last:
+        return len(loader.dataset)
+    else:
+        batch_size = loader.batch_size
+        return len(loader) * batch_size
+
+
 def run_model(args, epoch, loader, model, optimizer, scheduler, device,
               criterion: nn.Module,
               tensorboard_writer: Optional[SummaryWriter] = None,
               is_training: bool = True):
     run_type = 'training' if is_training else 'validation'
     status_bar = tqdm(total=0, position=0, bar_format='{desc}')
-    loader = tqdm(loader, position=1)
+    tqdm_loader = tqdm(loader, position=1)
 
     loss_sum = 0
     total_accuracy = 0
-    num_samples_seen = 0
+    num_samples_seen_epoch = 0
+    # number of samples seen across runs, useful for TensorBoard tracking
+    num_samples_seen_total = epoch * num_samples_in_loader(loader)
 
-    for i, (top, bottom, label) in enumerate(loader):
+    if is_training:
+        model = model.train()
+    else:
+        model = model.eval()
+
+    for i, (top, bottom, label) in enumerate(tqdm_loader):
         if is_training:
             model.zero_grad()
 
@@ -72,25 +87,37 @@ def run_model(args, epoch, loader, model, optimizer, scheduler, device,
         batch_size = top.shape[0]
         loss_sum += loss.item() * batch_size
         total_accuracy += accuracy * batch_size
-        num_samples_seen += batch_size
+        num_samples_seen_epoch += batch_size
+        num_samples_seen_total += batch_size
 
         status_bar.set_description_str(
             (
-                f'{run_type}, epoch: {epoch + 1}; avg loss: {loss_sum / num_samples_seen:.5f}; '
+                f'{run_type}, epoch: {epoch + 1}; avg loss: {loss_sum / num_samples_seen_epoch:.5f}; '
                 f'acc: {accuracy:.5f}; lr: {lr:.5f}'
             )
         )
 
-        if tensorboard_writer is not None:
+        if is_training and tensorboard_writer is not None:
+            # report metrics per batch
             loss_name = str(criterion)
             tensorboard_writer.add_scalar(f'pixelsnail_{run_type}_{args.hier}/{loss_name}',
                                           loss,
-                                          num_samples_seen)
+                                          num_samples_seen_total)
             tensorboard_writer.add_scalar(f'pixelsnail_{run_type}_{args.hier}/accuracy',
                                           accuracy,
-                                          num_samples_seen)
+                                          num_samples_seen_total)
 
-    return loss_sum, total_accuracy, num_samples_seen
+    if not is_training and tensorboard_writer is not None:
+        # only report metrics over full validation/test set
+        loss_name = str(criterion)
+        tensorboard_writer.add_scalar(f'pixelsnail_{run_type}_{args.hier}/mean_{loss_name}',
+                                      loss_sum / num_samples_seen_epoch,
+                                      epoch)
+        tensorboard_writer.add_scalar(f'pixelsnail_{run_type}_{args.hier}/mean_accuracy',
+                                      total_accuracy / num_samples_seen_epoch,
+                                      epoch)
+
+    return loss_sum, total_accuracy, num_samples_seen_epoch
 
 
 class PixelTransform:
@@ -155,7 +182,7 @@ if __name__ == '__main__':
             num_workers=args.num_workers, drop_last=False
         )
 
-    model_checkpoint_weights = {}
+    model_checkpoint_weights = None
     if args.pixelsnail_initial_weights_path is not None:
         model_checkpoint_weights = torch.load(
             args.pixelsnail_initial_weights_path)
@@ -253,10 +280,11 @@ if __name__ == '__main__':
             torch.save(checkpoint_dict, checkpoint_path)
 
         if validation_loader is not None:
-            total_validation_loss, total_accuracy, num_validation_samples = run_model(
-                args, epoch, loader, model, optimizer, scheduler, device,
-                criterion, tensorboard_writer=tensorboard_writer,
-                is_training=False)
+            with torch.no_grad():
+                total_validation_loss, total_accuracy, num_validation_samples = run_model(
+                    args, epoch, validation_loader, model, optimizer,
+                    scheduler, device, criterion,
+                    tensorboard_writer=tensorboard_writer, is_training=False)
             if total_validation_loss < best_validation_loss:
                 best_validation_loss = total_validation_loss
 
