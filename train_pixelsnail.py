@@ -143,6 +143,7 @@ if __name__ == '__main__':
     parser.add_argument('--n_out_res_block', type=int, default=0)
     parser.add_argument('--n_cond_res_block', type=int, default=3)
     parser.add_argument('--dropout', type=float, default=0.1)
+    parser.add_argument('--predict_frequencies_first', action='store_true')
     parser.add_argument('--amp', type=str, default='O0')
     parser.add_argument('--sched', type=str)
     parser.add_argument('--pixelsnail_initial_weights_path', type=str,
@@ -189,7 +190,7 @@ if __name__ == '__main__':
         # if 'args' in model_checkpoint_weights:
         #     args = model_checkpoint_weights['args']
 
-    shape_top, shape_bottom = (dataset[0][i].shape for i in range(2))
+    shape_top, shape_bottom = (list(dataset[0][i].shape) for i in range(2))
     if args.hier == 'top':
         snail = PixelSNAIL(
             shape_top,
@@ -201,6 +202,7 @@ if __name__ == '__main__':
             args.n_res_channel,
             dropout=args.dropout,
             n_out_res_block=args.n_out_res_block,
+            predict_frequencies_first=args.predict_frequencies_first
         )
     elif args.hier == 'bottom':
         snail = PixelSNAIL(
@@ -215,6 +217,7 @@ if __name__ == '__main__':
             dropout=args.dropout,
             n_cond_res_block=args.n_cond_res_block,
             cond_res_channel=args.n_res_channel,
+            predict_frequencies_first=args.predict_frequencies_first
         )
 
     if model_checkpoint_weights is not None:

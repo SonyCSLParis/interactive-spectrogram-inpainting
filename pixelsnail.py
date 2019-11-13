@@ -332,6 +332,21 @@ class CondResNet(nn.Module):
 
 
 class PixelSNAIL(nn.Module):
+    """PixelSNAIL for GANSynth-style data
+
+    Inputs are expected to be of shape [num_frequency_bands, time_duration],
+    with sample[0, 0] in a image the energy in the lowest frequency band
+    in the first time-frame.
+
+    Arguments:
+        * predict_frequencies_first (bool, optional, default is False):
+            if True, transposes the inputs to predict time-frame by time-frame,
+            potentially bringing more coherence in frequency within a given
+            time-frame by bringing the dependencies closer.
+        * predict_low_frequencies_first (bool, optional, default is True):
+            if False, flips the inputs so that frequencies are predicted in
+            decreasing order, starting at the harmonics.
+    """
     def __init__(
         self,
         shape: Iterable[int],
@@ -347,6 +362,8 @@ class PixelSNAIL(nn.Module):
         cond_res_channel: int = 0,
         cond_res_kernel: int = 3,
         n_out_res_block: int = 0,
+        predict_frequencies_first: bool = False,
+        predict_low_frequencies_first: bool = True
     ):
         self.shape = shape
 
@@ -367,19 +384,26 @@ class PixelSNAIL(nn.Module):
         self.cond_res_channel = cond_res_channel
         self.cond_res_kernel = cond_res_kernel
         self.n_out_res_block = n_out_res_block
+        self.predict_frequencies_first = predict_frequencies_first
+        self.predict_low_frequencies_first = predict_low_frequencies_first
 
         self._instantiation_parameters = self.__dict__.copy()
 
         super().__init__()
 
+        if self.predict_frequencies_first:
+            self.shape = self.shape[::-1]
+
         self.height, self.width = self.shape
         self.horizontal = CausalConv2d(
             self.n_class, self.channel,
-            [self.kernel_size // 2, self.kernel_size], padding='down'
+            [self.kernel_size // 2, self.kernel_size],
+            padding='down'
         )
         self.vertical = CausalConv2d(
             self.n_class, self.channel,
-            [(self.kernel_size + 1) // 2, self.kernel_size // 2], padding='downright'
+            [(self.kernel_size + 1) // 2, self.kernel_size // 2],
+            padding='downright'
         )
 
         coord_x = (torch.arange(self.height).float() - self.height / 2
@@ -430,28 +454,59 @@ class PixelSNAIL(nn.Module):
     def forward(self, input: torch.Tensor,
                 condition: Optional[torch.Tensor] = None,
                 cache: Optional[Mapping[str, torch.Tensor]] = None):
+        batch_dim, frequency_dim, time_dim = (0, 1, 2)
+
+        if not self.predict_low_frequencies_first:
+            input.flip(frequency_dim)
+
+        if self.predict_frequencies_first:
+            input = input.transpose(frequency_dim, time_dim)
+            batch_dim, frequency_dim, time_dim = (0, 2, 1)
+
         if cache is None:
             cache = {}
         batch, height, width = input.shape
         input = (
-            F.one_hot(input, self.n_class).permute(0, 3, 1, 2).type_as(self.background)
+            F.one_hot(input, self.n_class)
+            .permute(0, 3, 1, 2)
+            .type_as(self.background)
         )
+        # inserted code-dimension at dimension 1
+        code_dim = 1
+        (frequency_dim, time_dim) = frequency_dim+1, time_dim+1
         horizontal = shift_down(self.horizontal(input))
         vertical = shift_right(self.vertical(input))
         out = horizontal + vertical
 
-        background = self.background[:, :, :height, :].expand(batch, 2, height, width)
+        background = (self.background[:, :, :height, :]
+                      .expand(batch, 2, height, width))
 
         if condition is not None:
             if 'condition' in cache:
                 condition = cache['condition']
                 condition = condition[:, :, :height, :]
             else:
+                (condition_batch_dim, condition_frequency_dim,
+                    condition_time_dim) = (0, 1, 2)
+                if not self.predict_low_frequencies_first:
+                    condition.flip(condition_frequency_dim)
+
+                if self.predict_frequencies_first:
+                    condition = condition.transpose(condition_frequency_dim,
+                                                    condition_time_dim)
+                    (condition_batch_dim, condition_frequency_dim,
+                        condition_time_dim) = (0, 2, 1)
+
                 condition = (
                     F.one_hot(condition, self.n_class)
                     .permute(0, 3, 1, 2)
                     .type_as(self.background)
                 )
+                # inserted code-dimension at dimension 1
+                condition_code_dim = 1
+                (condition_frequency_dim, condition_time_dim) = (
+                    condition_frequency_dim+1, condition_time_dim+1)
+
                 condition = self.cond_resnet(condition)
                 condition = F.interpolate(condition, scale_factor=2)
                 cache['condition'] = condition.detach().clone()
@@ -462,6 +517,12 @@ class PixelSNAIL(nn.Module):
 
         out = self.out(out)
 
+        # reshape the outputs to the original input format
+        if not self.predict_low_frequencies_first:
+            out.flip(frequency_dim)
+        if self.predict_frequencies_first:
+            out = out.transpose(time_dim, frequency_dim)
+            batch_dim, frequency_dim, time_dim = (0, 1, 2)
         return out, cache
 
     @classmethod
