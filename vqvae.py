@@ -474,7 +474,7 @@ class VQVAE(nn.Module):
 
         model_state_dict = torch.load(model_weights_checkpoint_path,
                                       map_location=device)
-        if set(model_state_dict.keys()) == set(['model', 'args']):
+        if 'model' in model_state_dict.keys():
             model_state_dict = model_state_dict['model']
         vqvae.load_state_dict(model_state_dict)
         return vqvae
