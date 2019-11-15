@@ -5,7 +5,7 @@
 
 # Borrowed from https://github.com/neocxi/pixelsnail-public and ported it to PyTorch
 
-from typing import Iterable, Mapping, Union, Optional
+from typing import Iterable, Mapping, Union, Optional, Sequence
 from math import sqrt
 from functools import partial, lru_cache
 import pathlib
@@ -74,12 +74,12 @@ def shift_right(input, size=1):
 class CausalConv2d(nn.Module):
     def __init__(
         self,
-        in_channel,
-        out_channel,
-        kernel_size,
-        stride=1,
-        padding='downright',
-        activation=None,
+        in_channel: int,
+        out_channel: int,
+        kernel_size: Union[int, Sequence[int]],
+        stride: int = 1,
+        padding: str = 'downright',
+        activation: Optional[nn.Module] = None,
     ):
         super().__init__()
 
@@ -90,11 +90,12 @@ class CausalConv2d(nn.Module):
 
         if padding == 'downright':
             pad = [kernel_size[1] - 1, 0, kernel_size[0] - 1, 0]
-
         elif padding == 'down' or padding == 'causal':
             pad = kernel_size[1] // 2
-
             pad = [pad, pad, kernel_size[0] - 1, 0]
+        else:
+            raise ValueError(
+                f"Unexpected value {padding} for parameter `padding`")
 
         self.causal = 0
         if padding == 'causal':
@@ -111,11 +112,11 @@ class CausalConv2d(nn.Module):
             activation=activation,
         )
 
-    def forward(self, input):
+    def forward(self, input: torch.Tensor):
         out = self.pad(input)
 
         if self.causal > 0:
-            self.conv.conv.weight_v.data[:, :, -1, self.causal :].zero_()
+            self.conv.conv.weight_v.data[:, :, -1, self.causal:].zero_()
 
         out = self.conv(out)
 
@@ -125,10 +126,10 @@ class CausalConv2d(nn.Module):
 class GatedResBlock(nn.Module):
     def __init__(
         self,
-        in_channel,
-        channel,
-        kernel_size,
-        conv='wnconv2d',
+        in_channel: int,
+        channel: int,
+        kernel_size: Union[int, Sequence[int]],
+        conv: str = 'wnconv2d',
         activation=nn.ELU,
         dropout=0.1,
         auxiliary_channel=0,
@@ -138,12 +139,13 @@ class GatedResBlock(nn.Module):
 
         if conv == 'wnconv2d':
             conv_module = partial(WNConv2d, padding=kernel_size // 2)
-
         elif conv == 'causal_downright':
             conv_module = partial(CausalConv2d, padding='downright')
-
         elif conv == 'causal':
             conv_module = partial(CausalConv2d, padding='causal')
+        else:
+            raise ValueError(
+                f"Unexpected value {conv} for parameter `conv`")
 
         self.activation = activation(inplace=True)
         self.conv1 = conv_module(in_channel, channel, kernel_size)
@@ -214,7 +216,8 @@ class CausalAttention(nn.Module):
         batch, _, height, width = key.shape
 
         def reshape(input):
-            return input.view(batch, -1, self.n_head, self.dim_head).transpose(1, 2)
+            return (input.view(batch, -1, self.n_head, self.dim_head)
+                    .transpose(1, 2))
 
         query_flat = query.view(batch, query.shape[1], -1).transpose(1, 2)
         key_flat = key.view(batch, key.shape[1], -1).transpose(1, 2)
@@ -391,10 +394,11 @@ class PixelSNAIL(nn.Module):
 
         super().__init__()
 
+        self.internal_shape = self.shape
         if self.predict_frequencies_first:
-            self.shape = self.shape[::-1]
+            self.internal_shape = self.internal_shape[::-1]
 
-        self.height, self.width = self.shape
+        self.height, self.width = self.internal_shape
         self.horizontal = CausalConv2d(
             self.n_class, self.channel,
             [self.kernel_size // 2, self.kernel_size],
@@ -478,13 +482,13 @@ class PixelSNAIL(nn.Module):
         vertical = shift_right(self.vertical(input))
         out = horizontal + vertical
 
-        background = (self.background[:, :, :height, :]
-                      .expand(batch, 2, height, width))
+        background = (self.background[:, :, :height, :width]
+                          .expand(batch, 2, height, width))
 
         if condition is not None:
             if 'condition' in cache:
                 condition = cache['condition']
-                condition = condition[:, :, :height, :]
+                condition = condition[:, :, :height, :width]
             else:
                 (condition_batch_dim, condition_frequency_dim,
                     condition_time_dim) = (0, 1, 2)
@@ -510,7 +514,8 @@ class PixelSNAIL(nn.Module):
                 condition = self.cond_resnet(condition)
                 condition = F.interpolate(condition, scale_factor=2)
                 cache['condition'] = condition.detach().clone()
-                condition = condition[:, :, :height, :]
+                condition = cache['condition']
+                condition = condition[:, :, :height, :width]
 
         for block in self.blocks:
             out = block(out, background, condition=condition)
