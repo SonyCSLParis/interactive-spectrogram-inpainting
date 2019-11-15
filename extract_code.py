@@ -3,6 +3,8 @@ import pickle
 import json
 import pathlib
 import os
+import soundfile
+import numpy as np
 
 import torch
 from torch import nn
@@ -11,8 +13,8 @@ from torchvision import transforms
 import lmdb
 from tqdm import tqdm
 
-from dataset import ImageFileDataset, CodeRow
-from vqvae import VQVAE
+from dataset import ImageFileDataset, CodeRow, LMDBDataset
+from vqvae import InferenceVQVAE, VQVAE
 
 from GANsynth_pytorch.pytorch_nsynth_lib.nsynth import (
     NSynth, WavToSpectrogramDataLoader)
@@ -47,6 +49,7 @@ def extract(lmdb_env, loader, model, device):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--main_output_dir', type=str, required=True)
+    parser.add_argument('--checking_samples_dir', type=str, default=None)
     parser.add_argument('--size', type=int, default=256)
     parser.add_argument('--batch_size', type=int, default=64)
     parser.add_argument('--num_workers', type=int, default=4,
@@ -54,6 +57,7 @@ if __name__ == '__main__':
     parser.add_argument('--dataset_path', type=str, required=True)
     parser.add_argument('--model_weights_path', type=str, required=True)
     parser.add_argument('--model_parameters_path', type=str, required=True)
+    parser.add_argument('--disable_database_creation', action='store_true')
     parser.add_argument('--device', type=str, default='cpu',
                         choices=['cpu', 'cuda'])
 
@@ -67,11 +71,13 @@ if __name__ == '__main__':
     vqvae_model_filename = VQVAE_MODEL_WEIGHTS_PATH.stem
 
     OUTPUT_DIR = MAIN_DIR / f'vqvae-{vqvae_id}-weights-{vqvae_model_filename}/'
-    os.makedirs(OUTPUT_DIR, exist_ok=False)
 
-    # store command-line parameters
-    with open(OUTPUT_DIR / 'command_line_parameters.json', 'w') as f:
-        json.dump(args.__dict__, f)
+    if not args.disable_database_creation:
+        os.makedirs(OUTPUT_DIR, exist_ok=False)
+
+        # store command-line parameters
+        with open(OUTPUT_DIR / 'command_line_parameters.json', 'w') as f:
+            json.dump(args.__dict__, f)
 
     device = args.device
 
@@ -99,6 +105,9 @@ if __name__ == '__main__':
     vqvae = VQVAE(**vqvae_parameters)
     vqvae.load_state_dict(torch.load(args.model_weights_path,
                                      map_location=device))
+    inference_vqvae = InferenceVQVAE(vqvae, device=device,
+                                     hop_length=HOP_LENGTH,
+                                     n_fft=N_FFT)
     model = nn.DataParallel(vqvae)
     model = model.to(device)
     model.eval()
@@ -106,7 +115,33 @@ if __name__ == '__main__':
     # TODO(theis): compute appropriate size for the map
     map_size = 100 * 1024 * 1024 * 1024
 
-    env = lmdb.open(str(OUTPUT_DIR.absolute()), map_size=map_size)
+    lmdb_path = OUTPUT_DIR.absolute()
 
-    with torch.no_grad():
-        extract(env, loader, model, device)
+    if not args.disable_database_creation:
+        env = lmdb.open(str(lmdb_path), map_size=map_size)
+        with torch.no_grad():
+            extract(env, loader, model, device)
+
+    if args.checking_samples_dir:
+        # check extracted codes
+        codes_dataset = LMDBDataset(str(lmdb_path))
+        codes_loader = DataLoader(codes_dataset, batch_size=8, shuffle=True)
+        with torch.no_grad():
+            codes_top_sample, codes_bottom_sample, filenames_sample = (
+                next(iter(codes_loader)))
+            decoded_sample = vqvae.decode_code(codes_top_sample.to(device),
+                                               codes_bottom_sample.to(device))
+
+            def make_audio(mag_and_IF_batch: torch.Tensor) -> np.ndarray:
+                audio_batch = inference_vqvae.mag_and_IF_to_audio(
+                    mag_and_IF_batch, use_mel_frequency=True)
+                audio_mono_concatenated = audio_batch.flatten().cpu().numpy()
+                return audio_mono_concatenated
+
+            os.makedirs(args.checking_samples_dir, exist_ok=True)
+
+            audio_sample_path = os.path.join(
+                args.checking_samples_dir,
+                f'vqvae_codes_extraction_samples.wav')
+            soundfile.write(audio_sample_path, make_audio(decoded_sample),
+                            samplerate=FS_HZ)
