@@ -25,7 +25,7 @@ class ImageFileDataset(datasets.ImageFolder):
 class LMDBDataset(Dataset):
     def __init__(self, path):
         self.env = lmdb.open(
-            path,
+            str(path),
             max_readers=32,
             readonly=True,
             lock=False,
