@@ -15,14 +15,14 @@ from radam import RAdam
 
 try:
     from apex import amp
-
-except ImportError:
+except ModuleNotFoundError:
     amp = None
 
 from torch.utils.tensorboard.writer import SummaryWriter
 
 from dataset import LMDBDataset
 from pixelsnail import PixelSNAIL, LabelSmoothingLoss
+from transformer import ConditionalTransformer, UnconditionalTransformer
 from scheduler import CycleScheduler
 
 DIRPATH = os.path.dirname(os.path.abspath(__file__))
@@ -137,6 +137,9 @@ class PixelTransform:
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--num_epochs', type=int, default=420)
+    parser.add_argument('--model_type', type=str,
+                        choices=['PixelSNAIL', 'Transformer'],
+                        default='PixelSNAIL')
     parser.add_argument('--batch_size', type=int, default=32)
     parser.add_argument('--hier', type=str, default='top')
     parser.add_argument('--lr', type=float, default=3e-4)
@@ -165,7 +168,15 @@ if __name__ == '__main__':
 
     print(args)
 
-    run_ID = (f'pixelsnail-{args.hier}_layer-'
+    if args.model_type == 'PixelSNAIL':
+        prediction_model = PixelSNAIL
+    elif args.model_type == 'Transformer':
+        if args.hier == 'top':
+            prediction_model = UnconditionalTransformer
+        if args.hier == 'bottom':
+            prediction_model = ConditionalTransformer
+
+    run_ID = (f'{args.model_type}-{args.hier}_layer-'
               + datetime.now().strftime('%Y%m%d-%H%M%S-')
               + str(uuid.uuid4())[:6])
 
@@ -173,7 +184,8 @@ if __name__ == '__main__':
 
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
-    dataset = LMDBDataset(args.database_path)
+    DATABASE_PATH = pathlib.Path(args.database_path)
+    dataset = LMDBDataset(DATABASE_PATH.expanduser().absolute())
     loader = DataLoader(
         dataset, batch_size=args.batch_size, shuffle=True,
         num_workers=args.num_workers, drop_last=True
@@ -196,27 +208,27 @@ if __name__ == '__main__':
 
     shape_top, shape_bottom = (list(dataset[0][i].shape) for i in range(2))
     if args.hier == 'top':
-        snail = PixelSNAIL(
-            shape_top,
-            512,
-            args.channel,
-            5,
-            4,
-            args.n_res_block,
-            args.n_res_channel,
+        snail = prediction_model(
+            shape=shape_top,
+            n_class=512,
+            channel=args.channel,
+            kernel_size=5,
+            n_block=4,
+            n_res_block=args.n_res_block,
+            res_channel=args.n_res_channel,
             dropout=args.dropout,
             n_out_res_block=args.n_out_res_block,
             predict_frequencies_first=args.predict_frequencies_first
         )
     elif args.hier == 'bottom':
-        snail = PixelSNAIL(
-            shape_bottom,
-            512,
-            args.channel,
-            5,
-            4,
-            args.n_res_block,
-            args.n_res_channel,
+        snail = prediction_model(
+            shape=shape_bottom,
+            n_class=512,
+            channel=args.channel,
+            kernel_size=5,
+            n_block=4,
+            n_res_block=args.n_res_block,
+            res_channel=args.n_res_channel,
             attention=False,
             dropout=args.dropout,
             n_cond_res_block=args.n_cond_res_block,
@@ -246,7 +258,7 @@ if __name__ == '__main__':
         with open(CHECKPOINTS_DIR_PATH / 'command_line_parameters.json', 'w') as f:
             json.dump(args.__dict__, f)
         snail.store_instantiation_parameters(
-            CHECKPOINTS_DIR_PATH / 'pixelSNAIL_instantiation_parameters.json')
+            CHECKPOINTS_DIR_PATH / 'model_instantiation_parameters.json')
 
     tensorboard_writer = None
     if not (args.disable_writes_to_disk or args.disable_tensorboard):
@@ -265,7 +277,7 @@ if __name__ == '__main__':
                                    smoothing=args.label_smoothing,
                                    dim=1)
 
-    checkpoint_name = f'pixelsnail-layer_{args.hier}'
+    checkpoint_name = f'{args.model_type}-layer_{args.hier}'
     checkpoint_path = CHECKPOINTS_DIR_PATH / f'{checkpoint_name}.pt'
     best_model_checkpoint_path = (
         CHECKPOINTS_DIR_PATH
@@ -281,7 +293,7 @@ if __name__ == '__main__':
         checkpoint_dict = {
             'command_line_arguments': args.__dict__,
             'model': model.module.state_dict(),
-            'pixelsnail_instatiation_parameters': (
+            'model_instatiation_parameters': (
                 snail._instantiation_parameters),
             'epoch': epoch}
         if not args.disable_writes_to_disk:

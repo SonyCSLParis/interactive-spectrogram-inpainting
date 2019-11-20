@@ -12,24 +12,24 @@ class UnconditionalTransformer(nn.Module):
     """Causal, bi-directional transformer"""
     def __init__(
         self,
-        shape: Iterable[int],
+        shape: Iterable[int],  # [num_frequencies, frame_duration]
         n_class: int,
         channel: int,
         kernel_size: int,
         n_block: int,
         n_res_block: int,
         res_channel: int,
-        d_model: int = 512,
         attention: bool = True,
         dropout: float = 0.1,
         n_cond_res_block: int = 0,
         cond_res_channel: int = 0,
         cond_res_kernel: int = 3,
         n_out_res_block: int = 0,
-        positional_embeddings_dim: int = 16,
-        embeddings_dim: int = 32,
         predict_frequencies_first: bool = False,
-        predict_low_frequencies_first: bool = True
+        predict_low_frequencies_first: bool = True,
+        d_model: int = 512,
+        embeddings_dim: int = 32,
+        positional_embeddings_dim: int = 16,
     ):
         self.shape = shape
 
@@ -64,7 +64,6 @@ class UnconditionalTransformer(nn.Module):
         self.frequencies, self.duration = self.shape
         self.transformer_sequence_length = self.frequencies * self.duration
 
-
         self.positional_embeddings_frequency = nn.Parameter(
             torch.randn((1,  # batch-size
                          self.frequencies,  # frequency-dimension
@@ -82,35 +81,47 @@ class UnconditionalTransformer(nn.Module):
         if self.embeddings_dim is None:
             self.embeddings_dim = self.d_model-self.positional_embeddings_dim
 
-        self.embeddings_linear = nn.Linear(self.embeddings_dim,
-                                            self.d_model-self.positional_embeddings_dim)
+        self.embeddings_linear = nn.Linear(
+            self.embeddings_dim,
+            self.d_model-self.positional_embeddings_dim)
 
-        self.embed = nn.Embeddding(self.n_class, self.embeddings_dim)
+        self.embed = torch.nn.Embedding(self.n_class, self.embeddings_dim)
 
         # convert Transformer outputs to class-probabilities (as logits)
         self.project_transformer_outputs_to_logits = (
             nn.Linear(self.d_model, self.n_class))
 
-        self.start_symbol = torch.zeros((1, ))
+        # TODO reduce dimensionality of start symbol
+        self.start_symbol = nn.Parameter(
+            torch.randn((1, 1, self.d_model))
+        )
 
         encoder_layer = nn.TransformerEncoderLayer(d_model=512, nhead=8)
         self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=6)
 
-    def get_combined_positional_embeddings(self) -> torch.Tensor:
+    @property
+    def combined_positional_embeddings(self) -> torch.Tensor:
         batch_dim, frequency_dim, time_dim, embedding_dim = (0, 1, 2, 3)
+
         repeated_frequency_embeddings = (
             self.positional_embeddings_frequency
             .repeat(1, 1, self.duration, 1))
         repeated_time_embeddings = (
-            self.positional_embeddings_frequency
+            self.positional_embeddings_time
             .repeat(1, self.frequencies, 1, 1))
-        return torch.cat([repeated_frequency_embeddings, repeated_time_embeddings],
-                          dim=embedding_dim)
 
-    def generate_causal_mask(self, sequence_length: int) -> torch.Tensor:
+        return torch.cat([repeated_frequency_embeddings,
+                          repeated_time_embeddings],
+                         dim=embedding_dim)
+
+    @property
+    def causal_mask(self) -> torch.Tensor:
         """Generate a mask to impose causality"""
-        mask = (torch.triu(torch.ones(sequence_length, sequence_length)) == 1).transpose(0, 1)
-        mask = mask.float().masked_fill(mask == 0, float('-inf')).masked_fill(mask == 1, float(0.0))
+        mask = (torch.triu(torch.ones(self.transformer_sequence_length,
+                                      self.transformer_sequence_length)) == 1
+                ).transpose(0, 1)
+        mask = mask.float().masked_fill(mask == 0, float('-inf')).masked_fill(
+            mask == 1, float(0.0))
         return mask
 
     def forward(self, input: torch.Tensor,
@@ -119,18 +130,15 @@ class UnconditionalTransformer(nn.Module):
         batch_dim, frequency_dim, time_dim, embedding_dim = (0, 1, 2, 3)
         batch_size = input.shape[0]
 
-        causal_mask = self.generate_causal_mask(self.transformer_sequence_length)
-
-        # add positional embeddings
-        # add channel for embeddings
-        input = input.unsqueeze(embedding_dim)
+        causal_mask = self.causal_mask
 
         embedded_input = self.embeddings_linear(self.embed(input))
 
+        # add positional embeddings
         # combine time and frequency embeddings
-        positional_embeddings = self.get_combined_positional_embeddings()
+        positional_embeddings = self.combined_positional_embeddings
         input_with_positions = torch.cat(
-            [input, positional_embeddings.repeat(batch_size, 1, 1, 1)],
+            [embedded_input, positional_embeddings.repeat(batch_size, 1, 1, 1)],
             dim=embedding_dim
         )
 
@@ -140,8 +148,9 @@ class UnconditionalTransformer(nn.Module):
             (frequency_dim, time_dim) = (2, 1)
 
         flattened_input_with_positions = (
-            input_with_positions.view(batch_size, self.transformer_sequence_length,
-                                      self.d_model)
+            input_with_positions.reshape(batch_size,
+                                         self.transformer_sequence_length,
+                                         self.d_model)
         )
         (batch_dim, sequence_dim, embedding_dim) = (0, 1, 2)
 
@@ -150,27 +159,84 @@ class UnconditionalTransformer(nn.Module):
         # interpreted as the probability of generating each possible output
         # at that position
         shifted_sequence_with_positions = torch.cat(
-            [self.start_symbol, flattened_input_with_positions],
+            [self.start_symbol.repeat(batch_size, 1, 1),
+             flattened_input_with_positions.narrow(
+                 sequence_dim,
+                 0,
+                 self.transformer_sequence_length-1)],
             dim=sequence_dim
         )
 
+        # nn.Transformer inputs are in time-major shape
         transformer_input_sequence = shifted_sequence_with_positions.transpose(
             batch_dim, sequence_dim)
+        (batch_dim, sequence_dim) = (1, 0)
         output_sequence = self.transformer(transformer_input_sequence,
                                            mask=causal_mask)
+        # transpose back to batch-major shape
         output_sequence = output_sequence.transpose(
             batch_dim, sequence_dim)
+        (batch_dim, sequence_dim) = (0, 1)
 
+        # convert outputs to class probabilities
         logits = self.project_transformer_outputs_to_logits(output_sequence)
 
-        if self.predict_frequencies_first
-        time_frequency_logits = output_sequence.view(batch_size, fr)
+        output_dimensions = batch_dim, frequency_dim, time_dim, logit_dim = (
+            0, frequency_dim, time_dim, 3)
+        output_sizes = (batch_size, self.frequencies, self.duration,
+                        self.n_class)
 
-        return output
+        output_shape = [None] * len(output_sizes)
+        for dim_index, size in zip(output_dimensions, output_sizes):
+            output_shape[dim_index] = size
+
+        # reshape output to time-frequency format
+        time_frequency_logits = output_sequence.reshape(*output_shape)
+
+        if self.predict_frequencies_first:
+            time_frequency_logits = time_frequency_logits.transpose(
+                time_dim, frequency_dim)
+            (frequency_dim, time_dim) = (1, 2)
+
+        time_frequency_logits = (time_frequency_logits
+                                 .permute(0, 3, 1, 2))
+        return time_frequency_logits, None
+
+    @classmethod
+    def from_parameters_and_weights(
+            cls, parameters_json_path: pathlib.Path,
+            model_weights_checkpoint_path: pathlib.Path,
+            device: Union[str, torch.device] = 'cpu') -> 'PixelSNAIL':
+        """Re-instantiate a stored model using init parameters and weights
+
+        Arguments:
+            parameters_json_path (pathlib.Path)
+                Path to the a json file containing the keyword arguments used
+                to initialize the object
+            model_weights_checkpoint_path (pathlib.Path)
+                Path to a model weights checkpoint file as created by
+                torch.save
+            device (str or torch.device, default 'cpu')
+                Device on which to load the stored weights
+        """
+        with open(parameters_json_path, 'r') as f:
+            parameters = json.load(f)
+            model = cls(**parameters)
+
+        model_state_dict = torch.load(model_weights_checkpoint_path,
+                                      map_location=device)
+        if 'model' in model_state_dict.keys():
+            model_state_dict = model_state_dict['model']
+        model.load_state_dict(model_state_dict)
+        return model
+
+    def store_instantiation_parameters(self, path: pathlib.Path) -> None:
+        """Store the parameters used to create this instance as JSON"""
+        with open(path, 'w') as f:
+            json.dump(self._instantiation_parameters, f)
 
 
-
-class Transformer(nn.Module):
+class ConditionalTransformer(nn.Module):
     """Transformer-based generative model for latent maps
 
     Inputs are expected to be of shape [num_frequency_bands, time_duration],
