@@ -258,7 +258,8 @@ if __name__ == '__main__':
 
     num_classes = snail.n_class
     criterion = LabelSmoothingLoss(num_classes=num_classes,
-                                   smoothing=args.label_smoothing)
+                                   smoothing=args.label_smoothing,
+                                   dim=1)
 
     checkpoint_name = f'pixelsnail-layer_{args.hier}'
     checkpoint_path = CHECKPOINTS_DIR_PATH / f'{checkpoint_name}.pt'
