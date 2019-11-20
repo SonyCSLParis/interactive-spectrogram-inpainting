@@ -26,6 +26,9 @@ from scheduler import CycleScheduler
 
 DIRPATH = os.path.dirname(os.path.abspath(__file__))
 
+if torch.cuda.is_available():
+    torch.set_default_tensor_type(torch.cuda.FloatTensor)
+
 
 def num_samples_in_loader(loader: torch.utils.data.DataLoader):
     if loader.drop_last:
