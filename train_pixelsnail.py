@@ -11,6 +11,7 @@ import torch
 from torch import nn, optim
 from torch.utils.data import DataLoader
 from tqdm import tqdm
+from radam import RAdam
 
 try:
     from apex import amp
@@ -230,7 +231,7 @@ if __name__ == '__main__':
             snail.load_state_dict(model_checkpoint_weights)
 
     snail = snail.to(device)
-    optimizer = optim.Adam(snail.parameters(), lr=args.lr)
+    optimizer = RAdam(snail.parameters(), lr=args.lr)
 
     if amp is not None:
         snail, optimizer = amp.initialize(snail, optimizer, opt_level=args.amp)
