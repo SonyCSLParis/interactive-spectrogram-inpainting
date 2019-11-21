@@ -8,6 +8,7 @@ from tqdm import tqdm
 import numpy as np
 
 import torch
+from torch import nn
 from torchvision.utils import save_image
 
 from vqvae import VQVAE, InferenceVQVAE
@@ -43,6 +44,7 @@ def sample_model(model: PixelSNAIL, device: Union[torch.device, str],
     codemap = (torch.zeros(batch_size, *codemap_size, dtype=torch.int64)
                .to(device)
                )
+    parallel_model = nn.DataParallel(model)
 
     constraint_height = -1
     constraint_width = -1
@@ -67,15 +69,18 @@ def sample_model(model: PixelSNAIL, device: Union[torch.device, str],
 
     cache = {}
 
-    for i in tqdm(range(codemap_size[0])):
-        start_column = (0 if i > constraint_height
-                        else constraint_width + 1)
-        for j in range(start_column, codemap_size[1]):
-            out, cache = model(codemap[:, :i + 1, :], condition=condition,
+    if model.predict_frequencies_first:
+        for j in tqdm(range(codemap_size[1]), position=0):
+            start_column = (0 if j > constraint_width
+                            else constraint_height + 1)
+            for i in tqdm(range(start_column, codemap_size[0]), position=1):
+                out, cache = parallel_model(codemap, condition=condition,
                                cache=cache)
             prob = torch.softmax(out[:, :, i, j] / temperature, 1)
             sample = torch.multinomial(prob, 1).squeeze(-1)
             codemap[:, i, j] = sample
+    else:
+        raise NotImplementedError
 
     return codemap
 
