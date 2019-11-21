@@ -111,19 +111,23 @@ if __name__ == '__main__':
 
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
+
+    def absolute_path(path: str) -> str:
+        return str(pathlib.Path(path).expanduser().absolute())
+
     model_vqvae = VQVAE.from_parameters_and_weights(
-        args.vqvae_parameters_path,
-        args.vqvae_weights_path,
+        absolute_path(args.vqvae_parameters_path),
+        absolute_path(args.vqvae_weights_path),
         device=device
         ).to(device).eval()
-    model_top = PixelSNAIL.from_parameters_and_weights(
-        args.pixelsnail_top_parameters_path,
-        args.pixelsnail_top_weights_path,
+    model_top = ModelTop.from_parameters_and_weights(
+        absolute_path(args.prediction_top_parameters_path),
+        absolute_path(args.prediction_top_weights_path),
         device=device
         ).to(device).eval()
-    model_bottom = PixelSNAIL.from_parameters_and_weights(
-        args.pixelsnail_bottom_parameters_path,
-        args.pixelsnail_bottom_weights_path,
+    model_bottom = ModelBottom.from_parameters_and_weights(
+        absolute_path(args.prediction_bottom_parameters_path),
+        absolute_path(args.prediction_bottom_weights_path),
         device=device
         ).to(device).eval()
 
