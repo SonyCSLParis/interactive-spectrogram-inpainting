@@ -17,6 +17,9 @@ from transformer import UnconditionalTransformer, ConditionalTransformer
 from GANsynth_pytorch.pytorch_nsynth_lib.nsynth import (
     wavfile_to_melspec_and_IF)
 
+if torch.cuda.is_available():
+    torch.set_default_tensor_type(torch.cuda.FloatTensor)
+
 
 @torch.no_grad()
 def sample_model(model: PixelSNAIL, device: Union[torch.device, str],
