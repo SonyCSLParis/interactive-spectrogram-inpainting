@@ -13,6 +13,7 @@ from torchvision.utils import save_image
 
 from vqvae import VQVAE, InferenceVQVAE
 from pixelsnail import PixelSNAIL
+from transformer import UnconditionalTransformer, ConditionalTransformer
 from GANsynth_pytorch.pytorch_nsynth_lib.nsynth import (
     wavfile_to_melspec_and_IF)
 
@@ -88,15 +89,21 @@ def sample_model(model: PixelSNAIL, device: Union[torch.device, str],
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--batch_size', type=int, default=8)
+    parser.add_argument('--model_type_top', type=str,
+                        choices=['PixelSNAIL', 'Transformer'],
+                        default='PixelSNAIL')
+    parser.add_argument('--model_type_bottom', type=str,
+                        choices=['PixelSNAIL', 'Transformer'],
+                        default='PixelSNAIL')
     parser.add_argument('--vqvae_parameters_path', type=str, required=True)
     parser.add_argument('--vqvae_weights_path', type=str, required=True)
-    parser.add_argument('--pixelsnail_top_parameters_path', type=str,
+    parser.add_argument('--prediction_top_parameters_path', type=str,
                         required=True)
-    parser.add_argument('--pixelsnail_top_weights_path', type=str,
+    parser.add_argument('--prediction_top_weights_path', type=str,
                         required=True)
-    parser.add_argument('--pixelsnail_bottom_parameters_path', type=str,
+    parser.add_argument('--prediction_bottom_parameters_path', type=str,
                         required=True)
-    parser.add_argument('--pixelsnail_bottom_weights_path', type=str,
+    parser.add_argument('--prediction_bottom_weights_path', type=str,
                         required=True)
     parser.add_argument('--temperature', type=float, default=1.0)
     parser.add_argument('--hop_length', type=int, default=512)
@@ -116,6 +123,21 @@ if __name__ == '__main__':
 
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
+    if args.model_type_top == 'PixelSNAIL':
+        ModelTop = PixelSNAIL
+    elif args.model_type_top == 'Transformer':
+        ModelTop = UnconditionalTransformer
+    else:
+        raise ValueError(
+            f"Unexpected value {args.model_type_top} for option model_type_top")
+
+    if args.model_type_bottom == 'PixelSNAIL':
+        ModelBottom = PixelSNAIL
+    elif args.model_type_bottom == 'Transformer':
+        ModelBottom = ConditionalTransformer
+    else:
+        raise ValueError(
+            f"Unexpected value {args.model_type_bottom} for option model_type_bottom")
 
     def absolute_path(path: str) -> str:
         return str(pathlib.Path(path).expanduser().absolute())
