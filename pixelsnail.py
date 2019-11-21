@@ -359,6 +359,7 @@ class PixelSNAIL(nn.Module):
         n_block: int,
         n_res_block: int,
         res_channel: int,
+        condition_shape: Optional[Iterable[int]] = None,
         attention: bool = True,
         dropout: float = 0.1,
         n_cond_res_block: int = 0,
@@ -369,6 +370,7 @@ class PixelSNAIL(nn.Module):
         predict_low_frequencies_first: bool = True
     ):
         self.shape = shape
+        self.condition_shape = condition_shape
 
         self.n_class = n_class
         self.channel = channel

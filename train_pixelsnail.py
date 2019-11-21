@@ -223,6 +223,7 @@ if __name__ == '__main__':
     elif args.hier == 'bottom':
         snail = prediction_model(
             shape=shape_bottom,
+            condition_shape=shape_top,
             n_class=512,
             channel=args.channel,
             kernel_size=5,
