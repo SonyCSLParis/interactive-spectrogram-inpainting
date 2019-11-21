@@ -1,4 +1,4 @@
-from typing import Iterable, Mapping, Union, Optional, Sequence
+from typing import Iterable, Mapping, Union, Optional, Sequence, Tuple
 import pathlib
 import json
 
@@ -206,7 +206,8 @@ class UnconditionalTransformer(nn.Module):
     def from_parameters_and_weights(
             cls, parameters_json_path: pathlib.Path,
             model_weights_checkpoint_path: pathlib.Path,
-            device: Union[str, torch.device] = 'cpu') -> 'PixelSNAIL':
+            device: Union[str, torch.device] = 'cpu'
+            ) -> 'UnconditionalTransformer':
         """Re-instantiate a stored model using init parameters and weights
 
         Arguments:
