@@ -254,7 +254,8 @@ class ConditionalTransformer(nn.Module):
     """
     def __init__(
         self,
-        shape: Iterable[int],
+        shape: Iterable[int],  # [num_frequencies, frame_duration]
+        condition_shape: Tuple[int, int],
         n_class: int,
         channel: int,
         kernel_size: int,
@@ -268,9 +269,13 @@ class ConditionalTransformer(nn.Module):
         cond_res_kernel: int = 3,
         n_out_res_block: int = 0,
         predict_frequencies_first: bool = False,
-        predict_low_frequencies_first: bool = True
+        predict_low_frequencies_first: bool = True,
+        d_model: int = 512,
+        embeddings_dim: int = 32,
+        positional_embeddings_dim: int = 16,
     ):
         self.shape = shape
+        self.condition_shape = condition_shape
 
         self.n_class = n_class
         self.channel = channel
@@ -291,43 +296,256 @@ class ConditionalTransformer(nn.Module):
         self.n_out_res_block = n_out_res_block
         self.predict_frequencies_first = predict_frequencies_first
         self.predict_low_frequencies_first = predict_low_frequencies_first
+        self.d_model = d_model
+        self.embeddings_dim = embeddings_dim
+        # ensure an even value
+        self.positional_embeddings_dim = 2 * (positional_embeddings_dim // 2)
 
         self._instantiation_parameters = self.__dict__.copy()
 
         super().__init__()
 
-        self.frequencies, self.duration = self.shape
+        self.source_frequencies, self.source_duration = self.condition_shape
+        self.source_transformer_sequence_length = (
+            self.source_frequencies * self.source_duration)
 
-        self.self.source_positional_embeddings_time = nn.Parameter(
-            torch.randn((1,
-                         source_sequence_duration,
-                         positional_embedding_size))
+        self.target_frequencies, self.target_duration = self.shape
+        self.target_transformer_sequence_length = (
+            self.target_frequencies * self.target_duration)
+
+        self.source_positional_embeddings_frequency = nn.Parameter(
+            torch.randn((1,  # batch-size
+                         self.source_frequencies,  # frequency-dimension
+                         1,  # time-dimension
+                         self.positional_embeddings_dim//2))
         )
 
-        self.self.source_positional_embeddings_frequency = nn.Parameter(
-            torch.randn((1,
-                         source_sequence_,
-                         positional_embedding_size))
+        self.source_positional_embeddings_time = nn.Parameter(
+            torch.randn((1,  # batch-size
+                         1,  # frequency-dimension
+                         self.source_duration,  # time-dimension
+                         self.positional_embeddings_dim//2))
         )
 
-        self.target_positional_embeddings = nn.Parameter(
-            torch.randn((1,
-                         target_sequence_length,
-                         positional_embedding_size))
+        self.target_positional_embeddings_frequency = nn.Parameter(
+            torch.randn((1,  # batch-size
+                         self.target_frequencies,  # frequency-dimension
+                         1,  # time-dimension
+                         self.positional_embeddings_dim//2))
         )
 
-    def forward(self, input: torch.Tensor,
-                condition: Optional[torch.Tensor] = None,
+        self.target_positional_embeddings_time = nn.Parameter(
+            torch.randn((1,  # batch-size
+                         1,  # frequency-dimension
+                         self.target_duration,  # time-dimension
+                         self.positional_embeddings_dim//2))
+        )
+
+        if self.embeddings_dim is None:
+            self.embeddings_dim = self.d_model-self.positional_embeddings_dim
+
+        self.source_embeddings_linear = nn.Linear(
+            self.embeddings_dim,
+            self.d_model-self.positional_embeddings_dim)
+
+        self.target_embeddings_linear = nn.Linear(
+            self.embeddings_dim,
+            self.d_model-self.positional_embeddings_dim)
+
+        self.source_embed = torch.nn.Embedding(self.n_class,
+                                               self.embeddings_dim)
+        self.target_embed = torch.nn.Embedding(self.n_class,
+                                               self.embeddings_dim)
+
+        # convert Transformer outputs to class-probabilities (as logits)
+        self.project_transformer_outputs_to_logits = (
+            nn.Linear(self.d_model, self.n_class))
+
+        # TODO reduce dimensionality of start symbol
+        self.source_start_symbol = nn.Parameter(
+            torch.randn((1, 1, self.d_model))
+        )
+
+        self.target_start_symbol = nn.Parameter(
+            torch.randn((1, 1, self.d_model))
+        )
+
+        self.transformer = nn.Transformer(nhead=16, num_encoder_layers=12)
+
+    def embed_data(self, input: torch.Tensor, kind: str) -> torch.Tensor:
+        if kind == 'source':
+            return self.source_embeddings_linear(self.source_embed(input))
+        elif kind == 'target':
+            return self.target_embeddings_linear(self.target_embed(input))
+        else:
+            raise ValueError(f"Unexpected value {kind} for kind option")
+
+    def _get_combined_positional_embeddings(self, kind: str) -> torch.Tensor:
+        if kind == 'source':
+            positional_embeddings_frequency = (
+                self.source_positional_embeddings_frequency)
+            positional_embeddings_time = self.source_positional_embeddings_time
+            frequencies = self.source_frequencies
+            duration = self.source_duration
+        elif kind == 'target':
+            positional_embeddings_frequency = (
+                self.target_positional_embeddings_frequency)
+            positional_embeddings_time = self.target_positional_embeddings_time
+            frequencies = self.target_frequencies
+            duration = self.target_duration
+        else:
+            raise ValueError(f"Unexpected value {kind} for kind option")
+
+        batch_dim, frequency_dim, time_dim, embedding_dim = (0, 1, 2, 3)
+
+        repeated_frequency_embeddings = (
+            positional_embeddings_frequency
+            .repeat(1, 1, duration, 1))
+        repeated_time_embeddings = (
+            positional_embeddings_time
+            .repeat(1, frequencies, 1, 1))
+
+        return torch.cat([repeated_frequency_embeddings,
+                          repeated_time_embeddings],
+                         dim=embedding_dim)
+
+    @property
+    def combined_positional_embeddings_source(self) -> torch.Tensor:
+        return self._get_combined_positional_embeddings('source')
+
+    @property
+    def combined_positional_embeddings_target(self) -> torch.Tensor:
+        return self._get_combined_positional_embeddings('target')
+
+    @property
+    def causal_mask(self) -> torch.Tensor:
+        """Generate a mask to impose causality"""
+        mask = (torch.triu(torch.ones(
+            self.target_transformer_sequence_length,
+            self.target_transformer_sequence_length)) == 1
+                ).transpose(0, 1)
+        mask = mask.float().masked_fill(mask == 0, float('-inf')).masked_fill(
+            mask == 1, float(0.0))
+        return mask
+
+    def prepare_data(self, input: torch.Tensor, kind: str) -> torch.Tensor:
+        batch_dim, frequency_dim, time_dim, embedding_dim = (0, 1, 2, 3)
+        batch_size, frequencies, duration = input.shape
+
+        causal_mask = self.causal_mask
+
+        embedded_input = self.embed_data(input, kind)
+
+        # add positional embeddings
+        # combine time and frequency embeddings
+        if kind == 'source':
+            positional_embeddings = self.combined_positional_embeddings_source
+            start_symbol = self.source_start_symbol
+            transformer_sequence_length = (
+                self.source_transformer_sequence_length)
+        elif kind == 'target':
+            positional_embeddings = self.combined_positional_embeddings_target
+            start_symbol = self.target_start_symbol
+            transformer_sequence_length = (
+                self.target_transformer_sequence_length)
+        else:
+            raise ValueError(f"Unexpected value {kind} for kind option")
+
+        input_with_positions = torch.cat(
+            [embedded_input, positional_embeddings.repeat(batch_size, 1, 1, 1)],
+            dim=embedding_dim
+        )
+
+        if self.predict_frequencies_first:
+            input_with_positions = input_with_positions.transpose(
+                time_dim, frequency_dim)
+            (frequency_dim, time_dim) = (2, 1)
+        if not self.predict_low_frequencies_first:
+            raise NotImplementedError
+
+        flattened_input_with_positions = (
+            input_with_positions.reshape(batch_size,
+                                         frequencies * duration,
+                                         self.d_model)
+        )
+        (batch_dim, sequence_dim, embedding_dim) = (0, 1, 2)
+
+        # Shift inputs
+        # we do this so that the output of the transformer can be readily
+        # interpreted as the probability of generating each possible output
+        # at that position
+        shifted_sequence_with_positions = torch.cat(
+            [start_symbol.repeat(batch_size, 1, 1),
+             flattened_input_with_positions.narrow(
+                 sequence_dim,
+                 0,
+                 transformer_sequence_length-1)],
+            dim=sequence_dim
+        )
+        return shifted_sequence_with_positions, (
+            (batch_dim, frequency_dim, time_dim))
+
+    def forward(self, input: torch.Tensor, condition: torch.Tensor,
                 cache: Optional[Mapping[str, torch.Tensor]] = None):
-        batch_dim, frequency_dim, time_dim = (0, 1, 2)
+        batch_dim, frequency_dim, time_dim, embedding_dim = (0, 1, 2, 3)
+        batch_size = input.shape[0]
 
+        causal_mask = self.causal_mask
 
+        batch_major_source_sequence, (
+            batch_dim, frequency_dim, time_dim) = self.prepare_data(
+            input=condition, kind='source')
+
+        batch_major_target_sequence, _ = self.prepare_data(
+            input=input, kind='target')
+        (batch_dim, sequence_dim, embedding_dim) = (0, 1, 2)
+
+        # nn.Transformer inputs are in time-major shape
+        time_major_source_sequence = batch_major_source_sequence.transpose(
+            batch_dim, sequence_dim)
+        time_major_target_sequence = batch_major_target_sequence.transpose(
+            batch_dim, sequence_dim)
+        (batch_dim, sequence_dim) = (1, 0)
+        output_sequence = self.transformer(time_major_source_sequence,
+                                           time_major_target_sequence,
+                                           src_mask=None,
+                                           tgt_mask=causal_mask)
+        # transpose back to batch-major shape
+        output_sequence = output_sequence.transpose(
+            batch_dim, sequence_dim)
+        (batch_dim, sequence_dim) = (0, 1)
+
+        # convert outputs to class probabilities
+        logits = self.project_transformer_outputs_to_logits(output_sequence)
+
+        output_dimensions = batch_dim, frequency_dim, time_dim, logit_dim = (
+            0, frequency_dim, time_dim, 3)
+        output_sizes = (batch_size, self.target_frequencies,
+                        self.target_duration,
+                        self.n_class)
+
+        output_shape = [None] * len(output_sizes)
+        for dim_index, size in zip(output_dimensions, output_sizes):
+            output_shape[dim_index] = size
+
+        # reshape output to time-frequency format
+        time_frequency_logits = output_sequence.reshape(*output_shape)
+
+        if self.predict_frequencies_first:
+            time_frequency_logits = time_frequency_logits.transpose(
+                time_dim, frequency_dim)
+            (frequency_dim, time_dim) = (1, 2)
+
+        time_frequency_logits = (time_frequency_logits
+                                 .permute(0, 3, 1, 2))
+        return time_frequency_logits, None
 
     @classmethod
     def from_parameters_and_weights(
             cls, parameters_json_path: pathlib.Path,
             model_weights_checkpoint_path: pathlib.Path,
-            device: Union[str, torch.device] = 'cpu') -> 'PixelSNAIL':
+            device: Union[str, torch.device] = 'cpu'
+            ) -> 'ConditionalTransformer':
         """Re-instantiate a stored model using init parameters and weights
 
         Arguments:
