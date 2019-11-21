@@ -180,7 +180,10 @@ if __name__ == '__main__':
     def make_audio(mag_and_IF_batch: torch.Tensor) -> np.ndarray:
         audio_batch = inference_vqvae.mag_and_IF_to_audio(
             mag_and_IF_batch, use_mel_frequency=args.use_mel_frequency)
-        audio_mono_concatenated = audio_batch.flatten().cpu().numpy()
+        normalized_audio_batch = (
+            audio_batch
+            / audio_batch.abs().max(dim=1, keepdim=True)[0])
+        audio_mono_concatenated = normalized_audio_batch.flatten().cpu().numpy()
         return audio_mono_concatenated
 
     os.makedirs(args.output_directory, exist_ok=True)
