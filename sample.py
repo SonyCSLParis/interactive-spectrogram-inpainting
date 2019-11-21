@@ -1,5 +1,6 @@
 from typing import Union, Optional, Iterable
 import argparse
+import pathlib
 import os
 from datetime import datetime
 import uuid
@@ -79,10 +80,10 @@ def sample_model(model: PixelSNAIL, device: Union[torch.device, str],
                             else constraint_height + 1)
             for i in tqdm(range(start_column, codemap_size[0]), position=1):
                 out, cache = parallel_model(codemap, condition=condition,
-                               cache=cache)
-            prob = torch.softmax(out[:, :, i, j] / temperature, 1)
-            sample = torch.multinomial(prob, 1).squeeze(-1)
-            codemap[:, i, j] = sample
+                                            cache=cache)
+                prob = torch.softmax(out[:, :, i, j] / temperature, 1)
+                sample = torch.multinomial(prob, 1).squeeze(-1)
+                codemap[:, i, j] = sample
     else:
         raise NotImplementedError
 
