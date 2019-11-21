@@ -124,9 +124,7 @@ class UnconditionalTransformer(nn.Module):
             mask == 1, float(0.0))
         return mask
 
-    def forward(self, input: torch.Tensor,
-                condition: Optional[torch.Tensor] = None,
-                cache: Optional[Mapping[str, torch.Tensor]] = None):
+    def prepare_source(self, input: torch.Tensor) -> torch.Tensor:
         batch_dim, frequency_dim, time_dim, embedding_dim = (0, 1, 2, 3)
         batch_size = input.shape[0]
 
@@ -146,6 +144,8 @@ class UnconditionalTransformer(nn.Module):
             input_with_positions = input_with_positions.transpose(
                 time_dim, frequency_dim)
             (frequency_dim, time_dim) = (2, 1)
+        if not self.predict_low_frequencies_first:
+            raise NotImplementedError
 
         flattened_input_with_positions = (
             input_with_positions.reshape(batch_size,
@@ -166,13 +166,23 @@ class UnconditionalTransformer(nn.Module):
                  self.transformer_sequence_length-1)],
             dim=sequence_dim
         )
+        return shifted_sequence_with_positions, (
+            (batch_dim, frequency_dim, time_dim))
+
+    def forward(self, input: torch.Tensor,
+                condition: Optional[torch.Tensor] = None,
+                cache: Optional[Mapping[str, torch.Tensor]] = None):
+        (batch_dim, sequence_dim, embedding_dim) = (0, 1, 2)
+        batch_size = input.shape[0]
+        shifted_sequence_with_positions, (batch_dim, frequency_dim, time_dim) = (
+            self.prepare_source(input))
 
         # nn.Transformer inputs are in time-major shape
         transformer_input_sequence = shifted_sequence_with_positions.transpose(
             batch_dim, sequence_dim)
         (batch_dim, sequence_dim) = (1, 0)
         output_sequence = self.transformer(transformer_input_sequence,
-                                           mask=causal_mask)
+                                           mask=self.causal_mask)
         # transpose back to batch-major shape
         output_sequence = output_sequence.transpose(
             batch_dim, sequence_dim)
@@ -200,7 +210,7 @@ class UnconditionalTransformer(nn.Module):
 
         time_frequency_logits = (time_frequency_logits
                                  .permute(0, 3, 1, 2))
-        return time_frequency_logits, None
+        return time_frequency_logits, output_sequence
 
     @classmethod
     def from_parameters_and_weights(
