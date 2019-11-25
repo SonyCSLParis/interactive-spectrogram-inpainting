@@ -2,6 +2,7 @@ from typing import Union, Optional, Iterable
 import argparse
 import pathlib
 import os
+import json
 from datetime import datetime
 import uuid
 import soundfile
@@ -228,6 +229,8 @@ if __name__ == '__main__':
         return audio_mono_concatenated
 
     os.makedirs(args.output_directory, exist_ok=True)
+    with open(os.path.join(args.output_directory, f'{run_ID}-command_line_parameters.json'), 'w') as f:
+        json.dump(args.__dict__, f)
 
     audio_sample_path = os.path.join(args.output_directory, f'{run_ID}.wav')
     soundfile.write(audio_sample_path,
