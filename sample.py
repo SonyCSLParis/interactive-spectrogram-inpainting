@@ -9,6 +9,7 @@ from tqdm import tqdm
 import numpy as np
 
 import torch
+import torchaudio
 from torch import nn
 from torchvision.utils import save_image
 
@@ -203,19 +204,34 @@ if __name__ == '__main__':
                                      hop_length=args.hop_length,
                                      n_fft=args.n_fft)
 
-    def make_audio(mag_and_IF_batch: torch.Tensor) -> np.ndarray:
+    condition_top_audio = None
+    if args.condition_top_audio_path is not None:
+        import torchvision.transforms as transforms
+        sample_audio, fs_hz = torchaudio.load_wav(args.condition_top_audio_path,
+                                                  channels_first=True)
+        toFloat = transforms.Lambda(lambda x: (x / np.iinfo(np.int16).max))
+        sample_audio = toFloat(sample_audio)
+        condition_top_audio = sample_audio.flatten().cpu().numpy()
+
+    def make_audio(mag_and_IF_batch: torch.Tensor,
+                   condition_audio: Optional[np.ndarray]) -> np.ndarray:
         audio_batch = inference_vqvae.mag_and_IF_to_audio(
             mag_and_IF_batch, use_mel_frequency=args.use_mel_frequency)
         normalized_audio_batch = (
             audio_batch
             / audio_batch.abs().max(dim=1, keepdim=True)[0])
         audio_mono_concatenated = normalized_audio_batch.flatten().cpu().numpy()
+        if condition_audio is not None:
+            audio_mono_concatenated = np.concatenate([condition_audio,
+                                                     np.zeros(condition_audio.shape),
+                                                     audio_mono_concatenated])
         return audio_mono_concatenated
 
     os.makedirs(args.output_directory, exist_ok=True)
 
     audio_sample_path = os.path.join(args.output_directory, f'{run_ID}.wav')
-    soundfile.write(audio_sample_path, make_audio(decoded_sample),
+    soundfile.write(audio_sample_path,
+                    make_audio(decoded_sample, condition_top_audio),
                     samplerate=args.sample_rate_hz)
 
     # write spectrogram and IF
