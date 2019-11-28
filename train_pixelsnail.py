@@ -237,11 +237,16 @@ if __name__ == '__main__':
             predict_frequencies_first=args.predict_frequencies_first
         )
 
+    initial_epoch = 0
     if model_checkpoint_weights is not None:
         if 'model' in model_checkpoint_weights:
             snail.load_state_dict(model_checkpoint_weights['model'])
         else:
             snail.load_state_dict(model_checkpoint_weights)
+
+        if 'epoch' in model_checkpoint_weights:
+            initial_weights_training_epochs = model_checkpoint_weights['epoch']
+            initial_epoch = initial_weights_training_epochs + 1
 
     snail = snail.to(device)
     optimizer = RAdam(snail.parameters(), lr=args.lr)
@@ -286,7 +291,7 @@ if __name__ == '__main__':
 
     if validation_loader is not None:
         best_validation_loss = float("inf")
-    for epoch in range(args.num_epochs):
+    for epoch in range(initial_epoch, args.num_epochs):
         run_model(args, epoch, loader, model, optimizer, scheduler, device,
                   criterion, tensorboard_writer=tensorboard_writer,
                   is_training=True)
