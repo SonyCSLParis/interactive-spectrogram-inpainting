@@ -367,7 +367,10 @@ class PixelSNAIL(nn.Module):
         cond_res_kernel: int = 3,
         n_out_res_block: int = 0,
         predict_frequencies_first: bool = False,
-        predict_low_frequencies_first: bool = True
+        predict_low_frequencies_first: bool = True,
+        conditional_model: bool = True,  # only used for duck-typing
+        conditional_model_num_encoder_layers: int = 12,  # only used for duck-typing
+        conditional_model_nhead: int = 16,  # only used for duck-typing
     ):
         self.shape = shape
         self.condition_shape = condition_shape

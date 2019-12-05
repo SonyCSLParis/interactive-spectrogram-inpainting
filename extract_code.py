@@ -1,3 +1,4 @@
+from typing import Optional, Iterable, Mapping
 import argparse
 import pickle
 import json
@@ -5,6 +6,7 @@ import pathlib
 import os
 import soundfile
 import numpy as np
+from sklearn.preprocessing import LabelEncoder
 
 import torch
 from torch import nn
@@ -24,21 +26,32 @@ N_FFT = 2048
 FS_HZ = 16000
 
 
-def extract(lmdb_env, loader, model, device):
+def extract(lmdb_env, loader, model, device,
+            label_encoders: Mapping[str, LabelEncoder] = {}):
     index = 0
 
     with lmdb_env.begin(write=True) as txn:
         pbar_loader = tqdm(loader)
 
-        for sample_batch, sample_name_batch, pitch_batch in pbar_loader:
+        # store the label encoders along with the database to allow future conversions
+        txn.put('label_encoders'.encode('utf-8'), pickle.dumps(label_encoders))
+
+        attribute_names = label_encoders.keys()
+
+        for (sample_batch, *categorical_attributes_batch,
+                attributes_batch) in pbar_loader:
             sample_batch = sample_batch.to(device)
+            sample_names = attributes_batch['note_str']
 
             *_, id_t, id_b = model(sample_batch)
             id_t = id_t.detach().cpu().numpy()
             id_b = id_b.detach().cpu().numpy()
 
-            for file, top, bottom in zip(sample_name_batch, id_t, id_b):
-                row = CodeRow(top=top, bottom=bottom, filename=file)
+            for top, bottom, *attributes, sample_name in zip(
+                    id_t, id_b, *categorical_attributes_batch, sample_names):
+                row = CodeRow(top=top, bottom=bottom,
+                              attributes=dict(zip(attribute_names, attributes)),
+                              filename=sample_name)
                 txn.put(str(index).encode('utf-8'), pickle.dumps(row))
                 index += 1
                 pbar_loader.set_description(f'inserted: {index}')
@@ -86,14 +99,14 @@ if __name__ == '__main__':
     nsynth_dataset_with_samples_names = NSynth(
         root=str(args.dataset_path),
         valid_pitch_range=valid_pitch_range,
-        categorical_field_list=['note_str'],
+        categorical_field_list=['instrument_family', 'pitch'],
         squeeze_mono_channel=True)
 
     # converts wavforms to spectrograms on-the-fly on GPU
     loader = WavToSpectrogramDataLoader(
         nsynth_dataset_with_samples_names,
         batch_size=args.batch_size,
-        num_workers=args.num_workers, shuffle=True,
+        num_workers=args.num_workers, shuffle=False,
         pin_memory=True,
         device=device, n_fft=N_FFT, hop_length=HOP_LENGTH)
 
@@ -120,7 +133,8 @@ if __name__ == '__main__':
     if not args.disable_database_creation:
         env = lmdb.open(str(lmdb_path), map_size=map_size)
         with torch.no_grad():
-            extract(env, loader, model, device)
+            extract(env, loader, model, device,
+                    label_encoders=nsynth_dataset_with_samples_names.label_encoders)
 
     if args.checking_samples_dir:
         # check extracted codes

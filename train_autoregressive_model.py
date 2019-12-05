@@ -22,7 +22,7 @@ from torch.utils.tensorboard.writer import SummaryWriter
 
 from dataset import LMDBDataset
 from pixelsnail import PixelSNAIL, LabelSmoothingLoss
-from transformer import ConditionalTransformer, UnconditionalTransformer
+from transformer import VQNSynthTransformer
 from scheduler import CycleScheduler
 
 DIRPATH = os.path.dirname(os.path.abspath(__file__))
@@ -58,20 +58,26 @@ def run_model(args, epoch, loader, model, optimizer, scheduler, device,
     else:
         model = model.eval()
 
-    for i, (top, bottom, label) in enumerate(tqdm_loader):
+    for i, (top, bottom, *class_conditioning_tensors) in enumerate(tqdm_loader):
         if is_training:
             model.zero_grad()
+
+        class_conditioning_tensors = [
+            condition_tensor.to(device)
+            for condition_tensor in class_conditioning_tensors]
 
         top = top.to(device)
 
         if args.hier == 'top':
             target = top
-            out, _ = model(top)
+            out, _ = model(top,
+                           class_conditioning=class_conditioning_tensors)
 
         elif args.hier == 'bottom':
             bottom = bottom.to(device)
             target = bottom
-            out, _ = model(bottom, condition=top)
+            out, _ = model(bottom, condition=top,
+                           class_conditioning=class_conditioning_tensors)
 
         loss = criterion(out, target)
 
@@ -104,20 +110,20 @@ def run_model(args, epoch, loader, model, optimizer, scheduler, device,
         if is_training and tensorboard_writer is not None:
             # report metrics per batch
             loss_name = str(criterion)
-            tensorboard_writer.add_scalar(f'pixelsnail_{run_type}_{args.hier}/{loss_name}',
+            tensorboard_writer.add_scalar(f'code_prediction-{run_type}_{args.hier}/{loss_name}',
                                           loss,
                                           num_samples_seen_total)
-            tensorboard_writer.add_scalar(f'pixelsnail_{run_type}_{args.hier}/accuracy',
+            tensorboard_writer.add_scalar(f'code_prediction-{run_type}_{args.hier}/accuracy',
                                           accuracy,
                                           num_samples_seen_total)
 
     if not is_training and tensorboard_writer is not None:
         # only report metrics over full validation/test set
         loss_name = str(criterion)
-        tensorboard_writer.add_scalar(f'pixelsnail_{run_type}_{args.hier}/mean_{loss_name}',
+        tensorboard_writer.add_scalar(f'code_prediction-{run_type}_{args.hier}/mean_{loss_name}',
                                       loss_sum / num_samples_seen_epoch,
                                       epoch)
-        tensorboard_writer.add_scalar(f'pixelsnail_{run_type}_{args.hier}/mean_accuracy',
+        tensorboard_writer.add_scalar(f'code_prediction-{run_type}_{args.hier}/mean_accuracy',
                                       total_accuracy / num_samples_seen_epoch,
                                       epoch)
 
@@ -149,12 +155,20 @@ if __name__ == '__main__':
     parser.add_argument('--n_res_channel', type=int, default=256)
     parser.add_argument('--n_out_res_block', type=int, default=0)
     parser.add_argument('--n_cond_res_block', type=int, default=3)
+    parser.add_argument('--classes_for_conditioning', type=str,
+                        choices=['pitch', 'instrument_family'], nargs='+',
+                        default=[])
+    parser.add_argument('--class_conditioning_embedding_dim_per_modality',
+                        type=int, default=16)
+    parser.add_argument('--conditional_model_nhead', type=int, default=16)
+    parser.add_argument('--conditional_model_num_encoder_layers', type=int,
+                        default=12)
     parser.add_argument('--dropout', type=float, default=0.1)
     parser.add_argument('--predict_frequencies_first', action='store_true')
     parser.add_argument('--amp', type=str, default='O0')
     parser.add_argument('--sched', type=str)
-    parser.add_argument('--pixelsnail_initial_weights_path', type=str,
-                        help=("Initialize trained PixelSNAIL with the weights "
+    parser.add_argument('--initial_weights_path', type=str,
+                        help=("Restart training from the weights "
                               "contained in the provided PyTorch checkpoint"))
     parser.add_argument('--disable_writes_to_disk', action='store_true')
     parser.add_argument('--disable_tensorboard', action='store_true')
@@ -171,10 +185,7 @@ if __name__ == '__main__':
     if args.model_type == 'PixelSNAIL':
         prediction_model = PixelSNAIL
     elif args.model_type == 'Transformer':
-        if args.hier == 'top':
-            prediction_model = UnconditionalTransformer
-        if args.hier == 'bottom':
-            prediction_model = ConditionalTransformer
+        prediction_model = VQNSynthTransformer
 
     run_ID = (f'{args.model_type}-{args.hier}_layer-'
               + datetime.now().strftime('%Y%m%d-%H%M%S-')
@@ -185,24 +196,38 @@ if __name__ == '__main__':
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
     DATABASE_PATH = pathlib.Path(args.database_path)
-    dataset = LMDBDataset(DATABASE_PATH.expanduser().absolute())
+    dataset = LMDBDataset(
+        DATABASE_PATH.expanduser().absolute(),
+        classes_for_conditioning=args.classes_for_conditioning
+    )
     loader = DataLoader(
         dataset, batch_size=args.batch_size, shuffle=True,
-        num_workers=args.num_workers, drop_last=True
+        num_workers=args.num_workers, drop_last=True,
     )
+    class_conditioning_num_classes_per_modality = {
+        modality: len(label_encoder.classes_)
+        for modality, label_encoder in dataset.label_encoders.items()
+    }
+
+    class_conditioning_embedding_dim_per_modality = {
+        modality: args.class_conditioning_embedding_dim_per_modality
+        for modality in dataset.label_encoders.keys()
+    }
 
     validation_loader = None
     if args.validation_database_path is not None:
-        validation_dataset = LMDBDataset(args.validation_database_path)
+        validation_dataset = LMDBDataset(
+            args.validation_database_path,
+            classes_for_conditioning=args.classes_for_conditioning)
         validation_loader = DataLoader(
             validation_dataset, batch_size=args.batch_size, shuffle=False,
             num_workers=args.num_workers, drop_last=False
         )
 
     model_checkpoint_weights = None
-    if args.pixelsnail_initial_weights_path is not None:
+    if args.initial_weights_path is not None:
         model_checkpoint_weights = torch.load(
-            args.pixelsnail_initial_weights_path)
+            args.initial_weights_path)
         # if 'args' in model_checkpoint_weights:
         #     args = model_checkpoint_weights['args']
 
@@ -218,12 +243,14 @@ if __name__ == '__main__':
             res_channel=args.n_res_channel,
             dropout=args.dropout,
             n_out_res_block=args.n_out_res_block,
-            predict_frequencies_first=args.predict_frequencies_first
+            predict_frequencies_first=args.predict_frequencies_first,
+            conditional_model=False,
+            class_conditioning_num_classes_per_modality=class_conditioning_num_classes_per_modality,
+            class_conditioning_embedding_dim_per_modality=class_conditioning_embedding_dim_per_modality,
         )
     elif args.hier == 'bottom':
         snail = prediction_model(
             shape=shape_bottom,
-            condition_shape=shape_top,
             n_class=512,
             channel=args.channel,
             kernel_size=5,
@@ -234,7 +261,13 @@ if __name__ == '__main__':
             dropout=args.dropout,
             n_cond_res_block=args.n_cond_res_block,
             cond_res_channel=args.n_res_channel,
-            predict_frequencies_first=args.predict_frequencies_first
+            predict_frequencies_first=args.predict_frequencies_first,
+            class_conditioning_num_classes_per_modality=class_conditioning_num_classes_per_modality,
+            class_conditioning_embedding_dim_per_modality=class_conditioning_embedding_dim_per_modality,
+            conditional_model=True,
+            condition_shape=shape_top,
+            conditional_model_nhead=args.conditional_model_nhead,
+            conditional_model_num_encoder_layers=args.conditional_model_num_encoder_layers,
         )
 
     initial_epoch = 0
@@ -258,7 +291,7 @@ if __name__ == '__main__':
 
     MAIN_DIR = pathlib.Path(DIRPATH)
     CHECKPOINTS_DIR_PATH = pathlib.Path(
-        f'checkpoints/pixelsnail/vqvae-{args.vqvae_run_id}/{run_ID}/')
+        f'checkpoints/code_prediction/vqvae-{args.vqvae_run_id}/{run_ID}/')
     if not args.disable_writes_to_disk:
         os.makedirs(CHECKPOINTS_DIR_PATH, exist_ok=True)
         with open(CHECKPOINTS_DIR_PATH / 'command_line_parameters.json', 'w') as f:
