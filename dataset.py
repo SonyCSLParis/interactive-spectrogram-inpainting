@@ -50,10 +50,15 @@ class LMDBDataset(Dataset):
         with self.env.begin(write=False) as txn:
             self.length = int(
                 txn.get('length'.encode('utf-8')).decode('utf-8'))
-            self.label_encoders = pickle.loads(
-                txn.get('label_encoders'.encode('utf-8')))
-            self.label_encoders = self._filter_classes_labels(
-                self.label_encoders)
+
+            if (self.classes_for_conditioning is None
+                    or len(self.classes_for_conditioning) == 0):
+                self.label_encoders = []
+            else:
+                self.label_encoders = pickle.loads(
+                    txn.get('label_encoders'.encode('utf-8')))
+                self.label_encoders = self._filter_classes_labels(
+                    self.label_encoders)
 
     def __len__(self):
         return self.length
