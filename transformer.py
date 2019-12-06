@@ -336,6 +336,9 @@ class VQNSynthTransformer(nn.Module):
         self.class_conditioning_num_classes_per_modality = class_conditioning_num_classes_per_modality
         self.class_conditioning_embedding_dim_per_modality = class_conditioning_embedding_dim_per_modality
 
+        self.conditional_model_num_encoder_layers = conditional_model_num_encoder_layers
+        self.conditional_model_nhead = conditional_model_nhead
+
         self._instantiation_parameters = self.__dict__.copy()
 
         super().__init__()
@@ -457,11 +460,10 @@ class VQNSynthTransformer(nn.Module):
             )
 
         if self.conditional_model:
-            self.conditional_model_num_encoder_layers = conditional_model_num_encoder_layers
-            self.conditional_model_nhead = conditional_model_nhead
             self.transformer = nn.Transformer(
                 nhead=self.conditional_model_nhead,
-                num_encoder_layers=self.conditional_model_num_encoder_layers)
+                num_encoder_layers=self.conditional_model_num_encoder_layers,
+                d_model=self.d_model)
         else:
             encoder_layer = nn.TransformerEncoderLayer(d_model=512, nhead=8)
             self.transformer = nn.TransformerEncoder(encoder_layer,
@@ -607,7 +609,7 @@ class VQNSynthTransformer(nn.Module):
 
     def forward(self, input: torch.Tensor,
                 condition: Optional[torch.Tensor] = None,
-                class_conditioning: Optional[torch.Tensor] = None,
+                class_conditioning: Optional[Iterable[torch.Tensor]] = None,
                 cache: Optional[Mapping[str, torch.Tensor]] = None):
         batch_dim, frequency_dim, time_dim, embedding_dim = (0, 1, 2, 3)
         batch_size = input.shape[0]
