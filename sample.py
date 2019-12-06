@@ -14,9 +14,10 @@ import torchaudio
 from torch import nn
 from torchvision.utils import save_image
 
+from dataset import LMDBDataset
 from vqvae import VQVAE, InferenceVQVAE
 from pixelsnail import PixelSNAIL
-from transformer import UnconditionalTransformer, ConditionalTransformer
+from transformer import VQNSynthTransformer
 from GANsynth_pytorch.pytorch_nsynth_lib.nsynth import (
     wavfile_to_melspec_and_IF)
 
@@ -28,7 +29,8 @@ if torch.cuda.is_available():
 def sample_model(model: PixelSNAIL, device: Union[torch.device, str],
                  batch_size: int, codemap_size: Iterable[int],
                  temperature: float, condition: Optional[torch.Tensor] = None,
-                 constraint: Optional[torch.Tensor] = None):
+                 constraint: Optional[torch.Tensor] = None,
+                 class_conditioning: Optional[Iterable[int]] = None):
     """Generate a sample from the provided PixelSNAIL
 
     Arguments:
@@ -51,6 +53,11 @@ def sample_model(model: PixelSNAIL, device: Union[torch.device, str],
     codemap = (torch.zeros(batch_size, *codemap_size, dtype=torch.int64)
                .to(device)
                )
+    if class_conditioning is not None:
+        class_conditioning = [
+            tensor.long().repeat(batch_size, 1).to(device)
+            for tensor in class_conditioning
+        ]
     parallel_model = nn.DataParallel(model)
 
     constraint_height = -1
@@ -81,8 +88,10 @@ def sample_model(model: PixelSNAIL, device: Union[torch.device, str],
             start_column = (0 if j > constraint_width
                             else constraint_height + 1)
             for i in tqdm(range(start_column, codemap_size[0]), position=1):
-                out, cache = parallel_model(codemap, condition=condition,
-                                            cache=cache)
+                out, cache = model(
+                    codemap, condition=condition,
+                    cache=cache,
+                    class_conditioning=class_conditioning)
                 prob = torch.softmax(out[:, :, i, j] / temperature, 1)
                 sample = torch.multinomial(prob, 1).squeeze(-1)
                 codemap[:, i, j] = sample
@@ -111,6 +120,14 @@ if __name__ == '__main__':
                         required=True)
     parser.add_argument('--prediction_bottom_weights_path', type=str,
                         required=True)
+    parser.add_argument('--pitch_conditioning_top', type=int, default=None)
+    parser.add_argument('--instrument_family_conditioning_top', type=str,
+                        default=None)
+    parser.add_argument('--pitch_conditioning_bottom', type=int, default=None)
+    parser.add_argument('--instrument_family_conditioning_bottom', type=str,
+                        default=None)
+    # TODO(theis): change this, store label encoders inside the VQNSynthTransformer model class
+    parser.add_argument('--database_path_for_label_encoders', type=str)
     parser.add_argument('--temperature', type=float, default=1.0)
     parser.add_argument('--hop_length', type=int, default=512)
     parser.add_argument('--n_fft', type=int, default=2048)
@@ -132,7 +149,7 @@ if __name__ == '__main__':
     if args.model_type_top == 'PixelSNAIL':
         ModelTop = PixelSNAIL
     elif args.model_type_top == 'Transformer':
-        ModelTop = UnconditionalTransformer
+        ModelTop = VQNSynthTransformer
     else:
         raise ValueError(
             f"Unexpected value {args.model_type_top} for option model_type_top")
@@ -140,7 +157,7 @@ if __name__ == '__main__':
     if args.model_type_bottom == 'PixelSNAIL':
         ModelBottom = PixelSNAIL
     elif args.model_type_bottom == 'Transformer':
-        ModelBottom = ConditionalTransformer
+        ModelBottom = VQNSynthTransformer
     else:
         raise ValueError(
             f"Unexpected value {args.model_type_bottom} for option model_type_bottom")
@@ -164,6 +181,46 @@ if __name__ == '__main__':
         device=device
         ).to(device).eval()
 
+    classes_for_conditioning = []
+    if args.pitch_conditioning_top is not None or args.pitch_conditioning_bottom is not None:
+        classes_for_conditioning.append('pitch')
+    if args.instrument_family_conditioning_top is not None or args.instrument_family_conditioning_bottom is not None:
+        classes_for_conditioning.append('instrument_family')
+
+    if args.database_path_for_label_encoders is not None:
+        DATABASE_PATH = pathlib.Path(args.database_path_for_label_encoders)
+        dataset = LMDBDataset(
+            DATABASE_PATH.expanduser().absolute(),
+            classes_for_conditioning=classes_for_conditioning
+        )
+        label_encoders_per_conditioning = dataset.label_encoders
+
+    class_conditioning_top = []
+    class_conditioning_bottom = []
+
+    def maybe_add_conditioning(value, modality: str, location: str) -> None:
+        if value is None:
+            return
+        label_encoder = label_encoders_per_conditioning[modality]
+        encoded_label = label_encoder.transform([value])
+
+        if location == 'top':
+            class_conditioning_top.append(torch.from_numpy(encoded_label).long())
+        elif location == 'bottom':
+            class_conditioning_bottom.append(torch.from_numpy(encoded_label).long())
+        else:
+            raise ValueError("Invalid location")
+
+    for value, modality, location in zip(
+        [args.instrument_family_conditioning_top,
+         args.instrument_family_conditioning_bottom,
+         args.pitch_conditioning_top, args.pitch_conditioning_bottom,
+         ],
+        ['instrument_family', 'instrument_family', 'pitch', 'pitch',],
+        ['top', 'bottom', 'top', 'bottom']
+    ):
+        maybe_add_conditioning(value, modality, location)
+
     with torch.no_grad():
         if args.condition_top_audio_path is not None:
             condition_mel_spec_and_IF = wavfile_to_melspec_and_IF(
@@ -185,18 +242,21 @@ if __name__ == '__main__':
             top_code_sample = sample_model(
                 model_top, device, batch_size=1, codemap_size=model_top.shape,
                 temperature=args.temperature,
-                constraint=constraint_code_top_restrained)
+                constraint=constraint_code_top_restrained,
+                class_conditioning=class_conditioning_top)
 
             # repeat condition for the whole batch
             top_code = top_code_sample.repeat(args.batch_size, 1, 1)
         else:
             top_code_sample = sample_model(
                 model_top, device, args.batch_size, model_top.shape,
-                args.temperature)
+                args.temperature,
+                class_conditioning=class_conditioning_top)
             top_code = top_code_sample
         bottom_sample = sample_model(
             model_bottom, device, args.batch_size, model_bottom.shape,
-            args.temperature, condition=top_code
+            args.temperature, condition=top_code,
+            class_conditioning=class_conditioning_bottom
         )
 
         decoded_sample = model_vqvae.decode_code(top_code, bottom_sample)
