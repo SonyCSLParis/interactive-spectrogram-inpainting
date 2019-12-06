@@ -156,7 +156,7 @@ if __name__ == '__main__':
     parser.add_argument('--n_out_res_block', type=int, default=0)
     parser.add_argument('--n_cond_res_block', type=int, default=3)
     parser.add_argument('--classes_for_conditioning', type=str,
-                        choices=['pitch', 'instrument_family'], nargs='+',
+                        choices=['pitch', 'instrument_family'], nargs='*',
                         default=[])
     parser.add_argument('--class_conditioning_embedding_dim_per_modality',
                         type=int, default=16)
