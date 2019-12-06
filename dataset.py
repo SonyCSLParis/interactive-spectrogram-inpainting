@@ -53,7 +53,7 @@ class LMDBDataset(Dataset):
 
             if (self.classes_for_conditioning is None
                     or len(self.classes_for_conditioning) == 0):
-                self.label_encoders = []
+                self.label_encoders = {}
             else:
                 self.label_encoders = pickle.loads(
                     txn.get('label_encoders'.encode('utf-8')))
