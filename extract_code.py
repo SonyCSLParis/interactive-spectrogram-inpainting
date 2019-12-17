@@ -141,7 +141,7 @@ if __name__ == '__main__':
         codes_dataset = LMDBDataset(str(lmdb_path))
         codes_loader = DataLoader(codes_dataset, batch_size=8, shuffle=True)
         with torch.no_grad():
-            codes_top_sample, codes_bottom_sample, filenames_sample = (
+            codes_top_sample, codes_bottom_sample, instrument_families, pitches = (
                 next(iter(codes_loader)))
             decoded_sample = vqvae.decode_code(codes_top_sample.to(device),
                                                codes_bottom_sample.to(device))
