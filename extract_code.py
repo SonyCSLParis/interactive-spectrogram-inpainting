@@ -99,7 +99,7 @@ if __name__ == '__main__':
     nsynth_dataset_with_samples_names = NSynth(
         root=str(args.dataset_path),
         valid_pitch_range=valid_pitch_range,
-        categorical_field_list=['instrument_family', 'pitch'],
+        categorical_field_list=['instrument_family_str', 'pitch'],
         squeeze_mono_channel=True)
 
     # converts wavforms to spectrograms on-the-fly on GPU
