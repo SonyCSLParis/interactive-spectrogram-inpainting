@@ -298,6 +298,7 @@ class VQNSynthTransformer(nn.Module):
         positional_embeddings_dim: int = 16,
         class_conditioning_num_classes_per_modality: Optional[Mapping[str, int]] = None,
         class_conditioning_embedding_dim_per_modality: Optional[Mapping[str, int]] = None,
+        class_conditioning_prepend_to_dummy_input: bool = False,
         conditional_model: bool = False,
         condition_shape: Optional[Tuple[int, int]] = None,
         conditional_model_num_encoder_layers: int = 12,
@@ -335,6 +336,7 @@ class VQNSynthTransformer(nn.Module):
 
         self.class_conditioning_num_classes_per_modality = class_conditioning_num_classes_per_modality
         self.class_conditioning_embedding_dim_per_modality = class_conditioning_embedding_dim_per_modality
+        self.class_conditioning_prepend_to_dummy_input = class_conditioning_prepend_to_dummy_input
 
         self.conditional_model_num_encoder_layers = conditional_model_num_encoder_layers
         self.conditional_model_nhead = conditional_model_nhead
@@ -436,10 +438,18 @@ class VQNSynthTransformer(nn.Module):
                 )
 
             # initialize start positions for class conditioning in start symbol
-            current_position = self.d_model-1
+            if self.class_conditioning_prepend_to_dummy_input:
+                # insert class conditioning at beginning of the start symbol
+                current_position = 0
+                direction = +1
+            else:
+                # insert class conditioning at end of the start symbol
+                current_position = self.d_model
+                direction = -1
+
             for modality_name, modality_embedding_dim in (
                     self.class_conditioning_embedding_dim_per_modality.items()):
-                current_position = current_position - modality_embedding_dim + 1
+                current_position = current_position + direction*modality_embedding_dim
                 self.class_conditioning_start_positions_per_modality[modality_name] = (
                     current_position
                 )

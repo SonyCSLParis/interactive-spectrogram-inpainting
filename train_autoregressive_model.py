@@ -161,6 +161,8 @@ if __name__ == '__main__':
                         default=[])
     parser.add_argument('--class_conditioning_embedding_dim_per_modality',
                         type=int, default=16)
+    parser.add_argument('--class_conditioning_prepend_to_dummy_input',
+                        action='store_true')
     parser.add_argument('--conditional_model_nhead', type=int, default=16)
     parser.add_argument('--conditional_model_num_encoder_layers', type=int,
                         default=12)
@@ -258,6 +260,7 @@ if __name__ == '__main__':
             conditional_model=False,
             class_conditioning_num_classes_per_modality=class_conditioning_num_classes_per_modality,
             class_conditioning_embedding_dim_per_modality=class_conditioning_embedding_dim_per_modality,
+            class_conditioning_prepend_to_dummy_input=args.class_conditioning_prepend_to_dummy_input,
         )
     elif args.hier == 'bottom':
         snail = prediction_model(
@@ -279,6 +282,7 @@ if __name__ == '__main__':
             condition_shape=shape_top,
             conditional_model_nhead=args.conditional_model_nhead,
             conditional_model_num_encoder_layers=args.conditional_model_num_encoder_layers,
+            class_conditioning_prepend_to_dummy_input=args.class_conditioning_prepend_to_dummy_input
         )
 
     initial_epoch = 0
