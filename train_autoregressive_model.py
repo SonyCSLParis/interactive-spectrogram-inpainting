@@ -46,6 +46,7 @@ def run_model(args, epoch, loader, model, optimizer, scheduler, device,
     run_type = 'training' if is_training else 'validation'
     status_bar = tqdm(total=0, position=0, bar_format='{desc}')
     tqdm_loader = tqdm(loader, position=1)
+    num_training_samples = len(loader.dataset)
 
     loss_sum = 0
     total_accuracy = 0
@@ -110,10 +111,10 @@ def run_model(args, epoch, loader, model, optimizer, scheduler, device,
         if is_training and tensorboard_writer is not None:
             # report metrics per batch
             loss_name = str(criterion)
-            tensorboard_writer.add_scalar(f'code_prediction-{run_type}_{args.hier}/{loss_name}',
+            tensorboard_writer.add_scalar(f'code_prediction-{run_type}_{args.hier}-{num_training_samples}_training_samples/{loss_name}',
                                           loss,
                                           num_samples_seen_total)
-            tensorboard_writer.add_scalar(f'code_prediction-{run_type}_{args.hier}/accuracy',
+            tensorboard_writer.add_scalar(f'code_prediction-{run_type}_{args.hier}-{num_training_samples}_training_samples/accuracy',
                                           accuracy,
                                           num_samples_seen_total)
 
@@ -174,6 +175,9 @@ if __name__ == '__main__':
     parser.add_argument('--disable_tensorboard', action='store_true')
     parser.add_argument('--database_path', type=str, required=True)
     parser.add_argument('--validation_database_path', type=str, default=None)
+    parser.add_argument('--num_training_samples', type=int,
+                        help=('If provided, trims to input dataset to only use'
+                              'the given number of samples'))
     parser.add_argument('--vqvae_run_id', type=str, required=True)
     parser.add_argument('--num_workers', type=int, default=4,
                         help='Number of worker processes for the Dataloaders')
@@ -200,8 +204,15 @@ if __name__ == '__main__':
         DATABASE_PATH.expanduser().absolute(),
         classes_for_conditioning=args.classes_for_conditioning
     )
+
+    num_training_samples = args.num_training_samples
+    if num_training_samples is None:
+        # use all available training samples
+        num_training_samples = len(dataset)
+
     loader = DataLoader(
-        dataset, batch_size=args.batch_size, shuffle=True,
+        torch.utils.data.Subset(dataset, range(num_training_samples)),
+        batch_size=args.batch_size, shuffle=True,
         num_workers=args.num_workers, drop_last=True,
     )
     class_conditioning_num_classes_per_modality = {
