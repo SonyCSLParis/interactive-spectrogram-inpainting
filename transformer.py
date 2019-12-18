@@ -545,6 +545,7 @@ class VQNSynthTransformer(nn.Module):
                      class_conditioning: Optional[Iterable[torch.Tensor]] = None
                      ) -> torch.Tensor:
         if not self.conditional_model:
+            assert kind == 'source' or kind is None
             kind = 'source'
         batch_dim, frequency_dim, time_dim, embedding_dim = (0, 1, 2, 3)
         batch_size, frequencies, duration = input.shape
@@ -606,15 +607,21 @@ class VQNSynthTransformer(nn.Module):
         # we do this so that the output of the transformer can be readily
         # interpreted as the probability of generating each possible output
         # at that position
-        shifted_sequence_with_positions = torch.cat(
-            [start_symbol,
-             flattened_input_with_positions.narrow(
-                 sequence_dim,
-                 0,
-                 transformer_sequence_length-1)],
-            dim=sequence_dim
-        )
-        return shifted_sequence_with_positions, (
+        if not (self.conditional_model and kind == 'source'):
+            shifted_sequence_with_positions = torch.cat(
+                [start_symbol,
+                 flattened_input_with_positions.narrow(
+                     sequence_dim,
+                     0,
+                     transformer_sequence_length-1)],
+                dim=sequence_dim
+            )
+
+            prepared_sequence = shifted_sequence_with_positions
+        else:
+            prepared_sequence = flattened_input_with_positions
+
+        return prepared_sequence, (
             (batch_dim, frequency_dim, time_dim))
 
     def forward(self, input: torch.Tensor,
