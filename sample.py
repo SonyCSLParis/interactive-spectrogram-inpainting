@@ -185,7 +185,7 @@ if __name__ == '__main__':
     if args.pitch_conditioning_top is not None or args.pitch_conditioning_bottom is not None:
         classes_for_conditioning.append('pitch')
     if args.instrument_family_conditioning_top is not None or args.instrument_family_conditioning_bottom is not None:
-        classes_for_conditioning.append('instrument_family')
+        classes_for_conditioning.append('instrument_family_str')
 
     if args.database_path_for_label_encoders is not None:
         DATABASE_PATH = pathlib.Path(args.database_path_for_label_encoders)
@@ -216,7 +216,7 @@ if __name__ == '__main__':
          args.instrument_family_conditioning_bottom,
          args.pitch_conditioning_top, args.pitch_conditioning_bottom,
          ],
-        ['instrument_family', 'instrument_family', 'pitch', 'pitch',],
+        ['instrument_family_str', 'instrument_family_str', 'pitch', 'pitch',],
         ['top', 'bottom', 'top', 'bottom']
     ):
         maybe_add_conditioning(value, modality, location)
