@@ -96,7 +96,17 @@ def sample_model(model: PixelSNAIL, device: Union[torch.device, str],
                 sample = torch.multinomial(prob, 1).squeeze(-1)
                 codemap[:, i, j] = sample
     else:
-        raise NotImplementedError
+        for i in tqdm(range(codemap_size[0]), position=0):
+            start_column = (0 if i >= constraint_height
+                            else constraint_width)
+            for j in tqdm(range(start_column, codemap_size[1]), position=1):
+                out, cache = parallel_model(
+                    codemap, condition=condition,
+                    cache=cache,
+                    class_conditioning=class_conditioning)
+                prob = torch.softmax(out[:, :, i, j] / temperature, 1)
+                sample = torch.multinomial(prob, 1).squeeze(-1)
+                codemap[:, i, j] = sample
 
     return codemap
 
