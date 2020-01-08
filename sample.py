@@ -60,8 +60,8 @@ def sample_model(model: PixelSNAIL, device: Union[torch.device, str],
         ]
     parallel_model = nn.DataParallel(model)
 
-    constraint_height = -1
-    constraint_width = -1
+    constraint_height = 0
+    constraint_width = 0
     if constraint is not None:
         if list(constraint.shape) > codemap_size:
             raise ValueError("Incorrect size of constraint, constraint "
@@ -85,10 +85,10 @@ def sample_model(model: PixelSNAIL, device: Union[torch.device, str],
 
     if model.predict_frequencies_first:
         for j in tqdm(range(codemap_size[1]), position=0):
-            start_column = (0 if j > constraint_width
-                            else constraint_height + 1)
-            for i in tqdm(range(start_column, codemap_size[0]), position=1):
-                out, cache = model(
+            start_row = (0 if j >= constraint_width
+                         else constraint_height)
+            for i in tqdm(range(start_row, codemap_size[0]), position=1):
+                out, cache = parallel_model(
                     codemap, condition=condition,
                     cache=cache,
                     class_conditioning=class_conditioning)
