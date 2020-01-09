@@ -208,6 +208,7 @@ if __name__ == '__main__':
     parser.add_argument('--dataset', type=str, choices=['nsynth', 'imagenet'])
     parser.add_argument('--dataset_type', choices=['hdf5', 'wav'],
                         default='wav')
+    parser.add_argument('--normalize_input_images', action='store_true')
     parser.add_argument('--groups', type=int, default=1)
     parser.add_argument('--sched', type=str)
     parser.add_argument('--batch_size', type=int, default=64)
@@ -254,18 +255,32 @@ if __name__ == '__main__':
     print("Loading dataset: ", dataset_name)
     vqvae_decoder_activation = None
     if dataset_name == 'imagenet':
-        transform = transforms.Compose(
-            [
-                transforms.Resize(args.size),
-                transforms.CenterCrop(args.size),
-                transforms.ToTensor(),
-                transforms.Normalize([0.5, 0.5, 0.5], [0.5, 0.5, 0.5])
+        def make_resize_transform(target_size: Union[int, Sequence[int]],
+                                  normalize: bool):
+            transformations = [
+                transforms.Resize(target_size),
+                transforms.CenterCrop(target_size),
+                transforms.ToTensor()
             ]
-        )
-        dataset = datasets.ImageFolder(train_dataset_path, transform=transform)
-        loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True,
-                            num_workers=4)
+            if normalize:
+                transformations.append(transforms.Normalize([0.5, 0.5, 0.5],
+                                                            [0.5, 0.5, 0.5]))
+            return transforms.Compose(transformations)
+
+        transform = make_resize_transform(args.size, args.normalize_images)
+
+        train_dataset = datasets.ImageFolder(train_dataset_path,
+                                             transform=transform)
+        validation_dataset = datasets.ImageFolder(validation_dataset_path,
+                                                  transform=transform)
+        loader = DataLoader(train_dataset, batch_size=args.batch_size,
+                            shuffle=True, num_workers=args.num_workers)
+        validation_loader = DataLoader(validation_dataset,
+                                       batch_size=args.batch_size,
+                                       shuffle=True,
+                                       num_workers=args.num_workers)
         dataloader_for_gansynth_normalization = None
+        normalizer_statistics = None
         in_channel = 3
 
     elif dataset_name == 'nsynth':
@@ -467,7 +482,9 @@ if __name__ == '__main__':
                                           global_step=epoch_index)
 
             # if i+1 % tensorboard_audio_interval_epochs == 0:
+            if dataset_name == 'nsynth':
             # add audio summaries
+
             samples, reconstructions = inference_vqvae.sample_reconstructions(
                 validation_loader)
             samples = samples[:3]
@@ -497,5 +514,19 @@ if __name__ == '__main__':
             tensorboard_writer.add_figure('Originals + Reconstructions (mel-scale, logspec/IF, validation data)',
                                           spec_figure,
                                           epoch_index)
+            elif dataset_name == 'imagenet':
+                if epoch_index % 5 == 0:
+                    for subset_name, subset_loader in [('training', loader),
+                                                       ('validation', validation_loader)]:
+                        with torch.no_grad():
+                            samples = subset_loader.__iter__().__next__()[0].to(device)[:16]
+                            reconstructions = model(samples)[0]
+                            samples_and_reconstructions = torch.cat(
+                                [samples, reconstructions], dim=0)
+                            utils.save_image(
+                                samples_and_reconstructions,
+                                os.path.join(DIRPATH, f'samples/{run_ID}/',
+                                            f'{str(epoch_index + 1).zfill(5)}_{subset_name}.png')
+                            )
 
             tensorboard_writer.flush()

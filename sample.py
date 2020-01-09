@@ -114,6 +114,8 @@ def sample_model(model: PixelSNAIL, device: Union[torch.device, str],
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--batch_size', type=int, default=8)
+    parser.add_argument('--dataset', type=str, choices=['nsynth', 'imagenet'],
+                        required=True)
     parser.add_argument('--model_type_top', type=str,
                         choices=['PixelSNAIL', 'Transformer'],
                         default='PixelSNAIL')
@@ -302,6 +304,7 @@ if __name__ == '__main__':
     with open(os.path.join(args.output_directory, f'{run_ID}-command_line_parameters.json'), 'w') as f:
         json.dump(args.__dict__, f)
 
+    if args.dataset == 'nsynth':
     audio_sample_path = os.path.join(args.output_directory, f'{run_ID}.wav')
     soundfile.write(audio_sample_path,
                     make_audio(decoded_sample, condition_top_audio),
@@ -321,3 +324,10 @@ if __name__ == '__main__':
             # range=(-1, 1),
             # scale_each=True,
         )
+    elif args.dataset == 'imagenet':
+        image_sample_path = os.path.join(args.output_directory, f'{run_ID}.png')
+        save_image(
+                decoded_sample,
+                image_sample_path,
+                nrow=args.batch_size
+            )

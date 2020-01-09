@@ -11,7 +11,7 @@ from sklearn.preprocessing import LabelEncoder
 import torch
 from torch import nn
 from torch.utils.data import DataLoader
-from torchvision import transforms
+from torchvision import transforms, datasets, utils
 import lmdb
 from tqdm import tqdm
 
@@ -26,7 +26,7 @@ N_FFT = 2048
 FS_HZ = 16000
 
 
-def extract(lmdb_env, loader, model, device,
+def extract(lmdb_env, loader, model, device, dataset: str,
             label_encoders: Mapping[str, LabelEncoder] = {}):
     index = 0
 
@@ -41,7 +41,10 @@ def extract(lmdb_env, loader, model, device,
         for (sample_batch, *categorical_attributes_batch,
                 attributes_batch) in pbar_loader:
             sample_batch = sample_batch.to(device)
-            sample_names = attributes_batch['note_str']
+            if dataset == 'nsynth':
+                sample_names = attributes_batch['note_str']
+            elif dataset == 'imagenet':
+                sample_names = attributes_batch
 
             *_, id_t, id_b = model(sample_batch)
             id_t = id_t.detach().cpu().numpy()
@@ -63,13 +66,16 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--main_output_dir', type=str, required=True)
     parser.add_argument('--checking_samples_dir', type=str, default=None)
-    parser.add_argument('--size', type=int, default=256)
+    parser.add_argument('--size', type=int, required=True)
     parser.add_argument('--batch_size', type=int, default=64)
     parser.add_argument('--num_workers', type=int, default=4,
                         help='Number of worker processes for the Dataloaders')
-    parser.add_argument('--dataset_path', type=str, required=True)
+    parser.add_argument('--dataset', type=str, choices=['nsynth', 'imagenet'])
+    parser.add_argument('--dataset_paths', type=str, nargs='+')
     parser.add_argument('--model_weights_path', type=str, required=True)
     parser.add_argument('--model_parameters_path', type=str, required=True)
+    parser.add_argument('--command_line_parameters_path', type=str,
+                        required=True)
     parser.add_argument('--disable_database_creation', action='store_true')
     parser.add_argument('--device', type=str, default='cpu',
                         choices=['cpu', 'cuda'])
@@ -79,6 +85,7 @@ if __name__ == '__main__':
     MAIN_DIR = pathlib.Path(args.main_output_dir)
 
     VQVAE_MODEL_WEIGHTS_PATH = pathlib.Path(args.model_weights_path)
+    VQVAE_COMMAND_LINE_PARAMETERS_PATH = pathlib.Path(args.model_weights_path)
     # folder containing the vqvae weights is the ID
     vqvae_id = VQVAE_MODEL_WEIGHTS_PATH.parts[-2]
     vqvae_model_filename = VQVAE_MODEL_WEIGHTS_PATH.stem
@@ -92,70 +99,122 @@ if __name__ == '__main__':
         with open(OUTPUT_DIR / 'command_line_parameters.json', 'w') as f:
             json.dump(args.__dict__, f)
 
+    with open(VQVAE_COMMAND_LINE_PARAMETERS_PATH, 'r') as f:
+        vqvae_command_line_parameters = json.load(f)
+
     device = args.device
 
-    valid_pitch_range = [24, 84]
+    dataset_paths = [
+        pathlib.Path(dataset_path).expanduser().absolute()
+        for dataset_path in args.dataset_paths
+    ]
 
-    nsynth_dataset_with_samples_names = NSynth(
-        root=str(args.dataset_path),
-        valid_pitch_range=valid_pitch_range,
-        categorical_field_list=['instrument_family_str', 'pitch'],
-        squeeze_mono_channel=True)
+    for dataset_path in dataset_paths:
+        assert dataset_path.is_dir()
+        dataset_name = dataset_path.name
+        if args.dataset == 'nsynth':
+            valid_pitch_range = [24, 84]
 
-    # converts wavforms to spectrograms on-the-fly on GPU
-    loader = WavToSpectrogramDataLoader(
-        nsynth_dataset_with_samples_names,
-        batch_size=args.batch_size,
-        num_workers=args.num_workers, shuffle=False,
-        pin_memory=True,
-        device=device, n_fft=N_FFT, hop_length=HOP_LENGTH)
+            nsynth_dataset_with_samples_names = NSynth(
+                root=str(dataset_path),
+                valid_pitch_range=valid_pitch_range,
+                categorical_field_list=['instrument_family_str', 'pitch'],
+                squeeze_mono_channel=True)
 
-    in_channel = 2
+            # converts wavforms to spectrograms on-the-fly on GPU
+            loader = WavToSpectrogramDataLoader(
+                nsynth_dataset_with_samples_names,
+                batch_size=args.batch_size,
+                num_workers=args.num_workers, shuffle=False,
+                pin_memory=True,
+                device=device, n_fft=N_FFT, hop_length=HOP_LENGTH)
 
-    with open(args.model_parameters_path, 'r') as f:
-        vqvae_parameters = json.load(f)
+            label_encoders = nsynth_dataset_with_samples_names.label_encoders
 
-    vqvae = VQVAE(**vqvae_parameters)
-    vqvae.load_state_dict(torch.load(args.model_weights_path,
-                                     map_location=device))
-    inference_vqvae = InferenceVQVAE(vqvae, device=device,
-                                     hop_length=HOP_LENGTH,
-                                     n_fft=N_FFT)
-    model = nn.DataParallel(vqvae)
-    model = model.to(device)
-    model.eval()
+            in_channel = 2
+        elif args.dataset == 'imagenet':
+            def make_resize_transform(target_size: Union[int, Sequence[int]],
+                                      normalize: bool):
+                transformations = [
+                    transforms.Resize(target_size),
+                    transforms.CenterCrop(target_size),
+                    transforms.ToTensor()
+                ]
+                if normalize:
+                    transformations.append(transforms.Normalize([0.5, 0.5, 0.5],
+                                                                [0.5, 0.5, 0.5]))
+                return transforms.Compose(transformations)
 
-    # TODO(theis): compute appropriate size for the map
-    map_size = 100 * 1024 * 1024 * 1024
+            transform = make_resize_transform(
+                vqvae_command_line_parameters.size,
+                vqvae_command_line_parameters.normalize_images)
+            dataset = datasets.ImageFolder(dataset_path,
+                                           transform=transform)
+            loader = DataLoader(dataset, batch_size=args.batch_size,
+                                shuffle=True, num_workers=args.num_workers)
+            dataloader_for_gansynth_normalization = None
+            normalizer_statistics = None
+            label_encoders = {}
+            in_channel = 3
 
-    lmdb_path = OUTPUT_DIR.absolute()
+        with open(args.model_parameters_path, 'r') as f:
+            vqvae_parameters = json.load(f)
 
-    if not args.disable_database_creation:
-        env = lmdb.open(str(lmdb_path), map_size=map_size)
-        with torch.no_grad():
-            extract(env, loader, model, device,
-                    label_encoders=nsynth_dataset_with_samples_names.label_encoders)
+        vqvae = VQVAE(**vqvae_parameters)
+        vqvae.load_state_dict(torch.load(args.model_weights_path,
+                                         map_location=device))
+        inference_vqvae = InferenceVQVAE(vqvae, device=device,
+                                         hop_length=HOP_LENGTH,
+                                         n_fft=N_FFT)
+        model = nn.DataParallel(vqvae)
+        model = model.to(device)
+        model.eval()
 
-    if args.checking_samples_dir:
-        # check extracted codes
-        codes_dataset = LMDBDataset(str(lmdb_path))
-        codes_loader = DataLoader(codes_dataset, batch_size=8, shuffle=True)
-        with torch.no_grad():
-            codes_top_sample, codes_bottom_sample, instrument_families, pitches = (
-                next(iter(codes_loader)))
-            decoded_sample = vqvae.decode_code(codes_top_sample.to(device),
-                                               codes_bottom_sample.to(device))
+        # TODO(theis): compute appropriate size for the map
+        map_size = 100 * 1024 * 1024 * 1024
 
-            def make_audio(mag_and_IF_batch: torch.Tensor) -> np.ndarray:
-                audio_batch = inference_vqvae.mag_and_IF_to_audio(
-                    mag_and_IF_batch, use_mel_frequency=True)
-                audio_mono_concatenated = audio_batch.flatten().cpu().numpy()
-                return audio_mono_concatenated
+        lmdb_path = (OUTPUT_DIR / dataset_name).absolute()
 
-            os.makedirs(args.checking_samples_dir, exist_ok=True)
+        if not args.disable_database_creation:
+            env = lmdb.open(str(lmdb_path), map_size=map_size)
+            with torch.no_grad():
+                extract(env, loader, model, device, args.dataset,
+                        label_encoders=label_encoders)
 
-            audio_sample_path = os.path.join(
-                args.checking_samples_dir,
-                f'vqvae_codes_extraction_samples.wav')
-            soundfile.write(audio_sample_path, make_audio(decoded_sample),
-                            samplerate=FS_HZ)
+        if args.checking_samples_dir:
+            # check extracted codes
+            codes_dataset = LMDBDataset(str(lmdb_path))
+            codes_loader = DataLoader(codes_dataset, batch_size=8, shuffle=True)
+            with torch.no_grad():
+                if args.dataset == 'nsynth':
+                    codes_top_sample, codes_bottom_sample, instrument_families, pitches = (
+                        next(iter(codes_loader)))
+                elif args.dataset == 'imagenet':
+                    codes_top_sample, codes_bottom_sample = (
+                        next(iter(codes_loader)))
+                decoded_sample = vqvae.decode_code(codes_top_sample.to(device),
+                                                codes_bottom_sample.to(device))
+
+                if args.dataset == 'nsynth':
+                    def make_audio(mag_and_IF_batch: torch.Tensor) -> np.ndarray:
+                        audio_batch = inference_vqvae.mag_and_IF_to_audio(
+                            mag_and_IF_batch, use_mel_frequency=True)
+                        audio_mono_concatenated = audio_batch.flatten().cpu().numpy()
+                        return audio_mono_concatenated
+
+                    os.makedirs(args.checking_samples_dir, exist_ok=True)
+
+                    audio_sample_path = os.path.join(
+                        args.checking_samples_dir,
+                        f'vqvae_codes_extraction_samples.wav')
+                    soundfile.write(audio_sample_path, make_audio(decoded_sample),
+                                    samplerate=FS_HZ)
+                elif args.dataset == 'imagenet':
+                    with torch.no_grad():
+                        sanity_check_samples_path = os.path.join(
+                            args.checking_samples_dir,
+                            f'vqvae_codes_extraction_samples.png')
+                        utils.save_image(
+                            decoded_sample,
+                            sanity_check_samples_path
+                        )
