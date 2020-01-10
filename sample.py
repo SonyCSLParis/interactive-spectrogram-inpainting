@@ -1,4 +1,4 @@
-from typing import Union, Optional, Iterable
+from typing import Union, Optional, Iterable, Tuple
 import argparse
 import pathlib
 import os
@@ -138,6 +138,13 @@ if __name__ == '__main__':
     parser.add_argument('--pitch_conditioning_bottom', type=int, default=None)
     parser.add_argument('--instrument_family_conditioning_bottom', type=str,
                         default=None)
+
+    def key_value(arg: str) -> Iterable[Tuple[str, str]]:
+        key, value = arg.split(',')
+        return str(key), str(value)
+
+    parser.add_argument('--class_conditioning', type=key_value, nargs='*',
+                        default=[])
     # TODO(theis): change this, store label encoders inside the VQNSynthTransformer model class
     parser.add_argument('--database_path_for_label_encoders', type=str)
     parser.add_argument('--temperature', type=float, default=1.0)
@@ -193,17 +200,21 @@ if __name__ == '__main__':
         device=device
         ).to(device).eval()
 
-    classes_for_conditioning = []
+    classes_for_conditioning = set()
     if args.pitch_conditioning_top is not None or args.pitch_conditioning_bottom is not None:
-        classes_for_conditioning.append('pitch')
+        classes_for_conditioning.add('pitch')
     if args.instrument_family_conditioning_top is not None or args.instrument_family_conditioning_bottom is not None:
-        classes_for_conditioning.append('instrument_family_str')
+        classes_for_conditioning.add('instrument_family_str')
+
+    additional_modalities = set(modality
+                                for modality, _ in args.class_conditioning)
+    classes_for_conditioning.update(additional_modalities)
 
     if args.database_path_for_label_encoders is not None:
         DATABASE_PATH = pathlib.Path(args.database_path_for_label_encoders)
         dataset = LMDBDataset(
             DATABASE_PATH.expanduser().absolute(),
-            classes_for_conditioning=classes_for_conditioning
+            classes_for_conditioning=list(classes_for_conditioning)
         )
         label_encoders_per_conditioning = dataset.label_encoders
 
@@ -232,6 +243,10 @@ if __name__ == '__main__':
         ['top', 'bottom', 'top', 'bottom']
     ):
         maybe_add_conditioning(value, modality, location)
+
+    for modality, value in args.class_conditioning:
+        for location in ['bottom', 'top']:
+            maybe_add_conditioning(value, modality, location)
 
     with torch.no_grad():
         if args.condition_top_audio_path is not None:
