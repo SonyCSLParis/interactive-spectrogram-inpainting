@@ -315,8 +315,6 @@ class VQVAE(nn.Module):
         corruption_weights: Mapping[str, Optional[List[float]]] = {'top': None,
                                                                    'bottom': None}
     ):
-        super().__init__()
-
         # store instantiation parameters
         self.in_channel = in_channel
         self.num_hidden_channels = num_hidden_channels
@@ -334,6 +332,8 @@ class VQVAE(nn.Module):
         self.corruption_weights = corruption_weights
 
         self._instantiation_parameters = self.__dict__.copy()
+
+        super().__init__()
 
         self.enc_b = Encoder(
             self.in_channel, self.num_hidden_channels, self.n_res_block,
