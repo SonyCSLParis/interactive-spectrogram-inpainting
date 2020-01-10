@@ -1,4 +1,4 @@
-from typing import Optional, Iterable, Mapping
+from typing import Optional, Iterable, Mapping, Union, Sequence
 import argparse
 import pickle
 import json
