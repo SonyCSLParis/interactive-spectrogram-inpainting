@@ -75,7 +75,7 @@ if __name__ == '__main__':
     parser.add_argument('--model_weights_path', type=str, required=True)
     parser.add_argument('--model_parameters_path', type=str, required=True)
     parser.add_argument('--command_line_parameters_path', type=str,
-                        required=True)
+                        required=False)
     parser.add_argument('--disable_database_creation', action='store_true')
     parser.add_argument('--device', type=str, default='cpu',
                         choices=['cpu', 'cuda'])
@@ -85,7 +85,6 @@ if __name__ == '__main__':
     MAIN_DIR = pathlib.Path(args.main_output_dir)
 
     VQVAE_MODEL_WEIGHTS_PATH = pathlib.Path(args.model_weights_path)
-    VQVAE_COMMAND_LINE_PARAMETERS_PATH = pathlib.Path(args.model_weights_path)
     # folder containing the vqvae weights is the ID
     vqvae_id = VQVAE_MODEL_WEIGHTS_PATH.parts[-2]
     vqvae_model_filename = VQVAE_MODEL_WEIGHTS_PATH.stem
@@ -94,13 +93,10 @@ if __name__ == '__main__':
 
     if not args.disable_database_creation:
         os.makedirs(OUTPUT_DIR, exist_ok=False)
-
         # store command-line parameters
         with open(OUTPUT_DIR / 'command_line_parameters.json', 'w') as f:
             json.dump(args.__dict__, f)
 
-    with open(VQVAE_COMMAND_LINE_PARAMETERS_PATH, 'r') as f:
-        vqvae_command_line_parameters = json.load(f)
 
     device = args.device
 
@@ -145,9 +141,16 @@ if __name__ == '__main__':
                                                                 [0.5, 0.5, 0.5]))
                 return transforms.Compose(transformations)
 
+            # retrieve size and normalization for the training process of the loaded model
+            # TODO(theis:maybe): store those details within the model itself?
+            VQVAE_COMMAND_LINE_PARAMETERS_PATH = pathlib.Path(
+                args.command_line_parameters_path)
+            with open(VQVAE_COMMAND_LINE_PARAMETERS_PATH, 'r') as f:
+                vqvae_command_line_parameters = json.load(f)
+
             transform = make_resize_transform(
-                vqvae_command_line_parameters.size,
-                vqvae_command_line_parameters.normalize_images)
+                vqvae_command_line_parameters['size'],
+                vqvae_command_line_parameters['normalize_input_images'])
             dataset = datasets.ImageFolder(dataset_path,
                                            transform=transform)
             loader = DataLoader(dataset, batch_size=args.batch_size,
