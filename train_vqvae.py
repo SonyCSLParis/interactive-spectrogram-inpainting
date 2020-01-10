@@ -203,7 +203,7 @@ if __name__ == '__main__':
     parser.add_argument('--num_embeddings', type=int, default=512)
     parser.add_argument('--num_hidden_channels', type=int, default=128)
     parser.add_argument('--num_residual_channels', type=int, default=32)
-    parser.add_argument('--epoch', type=int, default=560)
+    parser.add_argument('--num_training_epochs', type=int, default=560)
     parser.add_argument('--lr', type=float, default=3e-4)
     parser.add_argument('--dataset', type=str, choices=['nsynth', 'imagenet'])
     parser.add_argument('--dataset_type', choices=['hdf5', 'wav'],
@@ -216,6 +216,9 @@ if __name__ == '__main__':
                         help='Number of workers for the Dataloaders')
     parser.add_argument('--train_dataset_path', type=str)
     parser.add_argument('--validation_dataset_path', type=str)
+    parser.add_argument('--save_frequency', default=1, type=int,
+                        help=('Frequency (in epochs) at which to save'
+                              'trained weights'))
     parser.add_argument('--enable_image_dumps', action='store_true',
                         help=('Dump png pictures of the spectrograms during training.'
                               'WARNING: Takes up a lot of space!'))
@@ -420,7 +423,8 @@ if __name__ == '__main__':
     scheduler = None
     if args.sched == 'cycle':
         scheduler = CycleScheduler(
-            optimizer, args.lr, n_iter=len(loader) * args.epoch, momentum=None
+            optimizer, args.lr,
+            n_iter=len(loader) * args.num_training_epochs, momentum=None
         )
 
     MAIN_DIR = pathlib.Path(DIRPATH)
@@ -440,7 +444,7 @@ if __name__ == '__main__':
         tensorboard_writer = SummaryWriter(tensorboard_dir_path)
 
     print("Starting training")
-    for epoch_index in range(start_epoch, args.epoch):
+    for epoch_index in range(start_epoch, args.num_training_epochs):
         train(epoch_index, loader, model, optimizer, scheduler, device,
               run_id=run_ID,
               enable_image_dumps=args.enable_image_dumps,
@@ -453,6 +457,8 @@ if __name__ == '__main__':
         if args.disable_writes_to_disk:
             pass
         else:
+            if (epoch_index == args.num_training_epochs - 1  # save last run
+                    or epoch_index-start_epoch % args.save_frequency == 0):
             checkpoint_filename = (f'vqvae_{dataset_name}_'
                                    f'{str(epoch_index + 1).zfill(3)}.pt')
             torch.save(
