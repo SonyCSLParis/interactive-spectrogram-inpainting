@@ -534,6 +534,7 @@ class VQNSynthTransformer(nn.Module):
         else:
             # apply causal mask to the input for the prediction task
             causal_mask_length = self.source_transformer_sequence_length
+
         mask = (torch.triu(torch.ones(causal_mask_length,
                                       causal_mask_length)) == 1
                 ).transpose(0, 1)
@@ -549,8 +550,6 @@ class VQNSynthTransformer(nn.Module):
             kind = 'source'
         batch_dim, frequency_dim, time_dim, embedding_dim = (0, 1, 2, 3)
         batch_size, frequencies, duration = input.shape
-
-        causal_mask = self.causal_mask
 
         embedded_input = self.embed_data(input, kind)
 
