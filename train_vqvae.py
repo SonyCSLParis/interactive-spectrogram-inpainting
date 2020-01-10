@@ -1,10 +1,10 @@
+from typing import Optional, Union, Sequence
 from datetime import datetime
 import uuid
 import argparse
 import pathlib
 import pickle
 import json
-from typing import Optional
 from tqdm import tqdm
 import numpy as np
 import os
