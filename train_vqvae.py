@@ -428,12 +428,14 @@ if __name__ == '__main__':
         )
 
     MAIN_DIR = pathlib.Path(DIRPATH)
-    checkpoints_dir_path = MAIN_DIR / f'checkpoints/{run_ID}/'
+    CHECKPOINTS_DIR_PATH = MAIN_DIR / f'checkpoints/{run_ID}/'
     if not (args.dry_run or args.disable_writes_to_disk):
-        os.makedirs(checkpoints_dir_path, exist_ok=True)
+        os.makedirs(CHECKPOINTS_DIR_PATH, exist_ok=True)
 
+        with open(CHECKPOINTS_DIR_PATH / 'command_line_parameters.json', 'w') as f:
+            json.dump(args.__dict__, f)
         vqvae.store_instantiation_parameters(
-            checkpoints_dir_path / 'model_parameters.json')
+            CHECKPOINTS_DIR_PATH / 'model_parameters.json')
 
         os.makedirs(MAIN_DIR / f'samples/{run_ID}/', exist_ok=True)
 
@@ -463,7 +465,7 @@ if __name__ == '__main__':
                                    f'{str(epoch_index + 1).zfill(3)}.pt')
             torch.save(
                     model.module.state_dict(),
-                    checkpoints_dir_path / checkpoint_filename
+                        CHECKPOINTS_DIR_PATH / checkpoint_filename
             )
 
         # eval on validation set
