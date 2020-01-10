@@ -304,8 +304,9 @@ if __name__ == '__main__':
     model = nn.DataParallel(snail).to(device)
 
     MAIN_DIR = pathlib.Path(DIRPATH)
-    CHECKPOINTS_DIR_PATH = pathlib.Path(
-        f'checkpoints/code_prediction/vqvae-{args.vqvae_run_id}/{run_ID}/')
+    CHECKPOINTS_DIR_PATH = (
+        MAIN_DIR
+        / f'checkpoints/code_prediction/vqvae-{args.vqvae_run_id}/{run_ID}/')
     if not args.disable_writes_to_disk:
         os.makedirs(CHECKPOINTS_DIR_PATH, exist_ok=True)
         with open(CHECKPOINTS_DIR_PATH / 'command_line_parameters.json', 'w') as f:
