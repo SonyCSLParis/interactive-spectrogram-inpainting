@@ -45,6 +45,7 @@ def extract(lmdb_env, loader, model, device, dataset: str,
                 sample_names = attributes_batch['note_str']
             elif dataset == 'imagenet':
                 sample_names = attributes_batch
+                categorical_attributes_batch = [attributes_batch]
 
             *_, id_t, id_b = model(sample_batch)
             id_t = id_t.detach().cpu().numpy()
@@ -97,7 +98,7 @@ if __name__ == '__main__':
         with open(OUTPUT_DIR / 'command_line_parameters.json', 'w') as f:
             json.dump(args.__dict__, f)
 
-
+    
     device = args.device
 
     dataset_paths = [
@@ -140,7 +141,7 @@ if __name__ == '__main__':
                     transformations.append(transforms.Normalize([0.5, 0.5, 0.5],
                                                                 [0.5, 0.5, 0.5]))
                 return transforms.Compose(transformations)
-
+            
             # retrieve size and normalization for the training process of the loaded model
             # TODO(theis:maybe): store those details within the model itself?
             VQVAE_COMMAND_LINE_PARAMETERS_PATH = pathlib.Path(
@@ -157,7 +158,16 @@ if __name__ == '__main__':
                                 shuffle=True, num_workers=args.num_workers)
             dataloader_for_gansynth_normalization = None
             normalizer_statistics = None
-            label_encoders = {}
+
+            class_to_index = dataset.class_to_idx
+
+            # def invert_mapping(mapping: Mapping[any, any]) -> Mapping[any, any]:
+            #     return {v: k for k, v in mapping.items()}
+            # index_to_class = invert_mapping(class_to_index)
+            classes_label_encoder = LabelEncoder()
+            classes_label_encoder.classes_ = [
+                str(key) for key in class_to_index.keys()]
+            label_encoders = {'class': classes_label_encoder}
             in_channel = 3
 
         with open(args.model_parameters_path, 'r') as f:
@@ -193,10 +203,10 @@ if __name__ == '__main__':
                     codes_top_sample, codes_bottom_sample, instrument_families, pitches = (
                         next(iter(codes_loader)))
                 elif args.dataset == 'imagenet':
-                    codes_top_sample, codes_bottom_sample = (
+                    codes_top_sample, codes_bottom_sample, image_class = (
                         next(iter(codes_loader)))
                 decoded_sample = vqvae.decode_code(codes_top_sample.to(device),
-                                                codes_bottom_sample.to(device))
+                                                   codes_bottom_sample.to(device))
 
                 if args.dataset == 'nsynth':
                     def make_audio(mag_and_IF_batch: torch.Tensor) -> np.ndarray:
