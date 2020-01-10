@@ -382,7 +382,7 @@ if __name__ == '__main__':
 
         num_channels, height, width = sample.shape
         total_resolution_factor = 1
-        for layer_name, resolution_factor in resolution_factors.values():
+        for layer_name, resolution_factor in resolution_factors.items():
             total_resolution_factor *= resolution_factor
             print(f"Layer {layer_name}: ")
             print(f"\nAdditional downsampling factor {resolution_factor}")
