@@ -160,10 +160,10 @@ def evaluate(loader: DataLoader, model: nn.Module, device: str,
         latent_loss_total = 0
 
         model.eval()
-        for i, (img, pitch) in enumerate(loader):
+        for i, (img, _) in enumerate(loader):
             img = img.to(device)
 
-            out, latent_loss, perplexity_t, perplexity_b = model(img)
+            out, latent_loss, perplexity_t, perplexity_b, *_ = model(img)
             recon_loss = criterion(out, img)
             latent_loss = latent_loss.mean()
             loss = recon_loss + latent_loss_weight * latent_loss
