@@ -270,7 +270,8 @@ if __name__ == '__main__':
                                                             [0.5, 0.5, 0.5]))
             return transforms.Compose(transformations)
 
-        transform = make_resize_transform(args.size, args.normalize_images)
+        transform = make_resize_transform(args.size,
+                                          args.normalize_input_images)
 
         train_dataset = datasets.ImageFolder(train_dataset_path,
                                              transform=transform)
