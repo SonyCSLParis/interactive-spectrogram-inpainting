@@ -315,8 +315,6 @@ class VQVAE(nn.Module):
         corruption_weights: Mapping[str, Optional[List[float]]] = {'top': None,
                                                                    'bottom': None}
     ):
-        super().__init__()
-
         # store instantiation parameters
         self.in_channel = in_channel
         self.num_hidden_channels = num_hidden_channels
@@ -334,6 +332,8 @@ class VQVAE(nn.Module):
         self.corruption_weights = corruption_weights
 
         self._instantiation_parameters = self.__dict__.copy()
+
+        super().__init__()
 
         self.enc_b = Encoder(
             self.in_channel, self.num_hidden_channels, self.n_res_block,
@@ -498,10 +498,11 @@ class InferenceVQVAE(object):
         iterator = iter(dataloader)
         mag_and_IF_batch, _ = next(iterator)
         with torch.no_grad():
-            reconstructed_mag_and_IF_batch, *_ = self.vqvae.forward(
-                mag_and_IF_batch.to(self.device))
+            reconstructed_mag_and_IF_batch, *_, id_t, id_b = (
+                self.vqvae.forward(
+                    mag_and_IF_batch.to(self.device)))
 
-        return mag_and_IF_batch, reconstructed_mag_and_IF_batch
+        return mag_and_IF_batch, reconstructed_mag_and_IF_batch, id_t, id_b
 
     def mag_and_IF_to_audio(self, mag_and_IF: torch.Tensor,
                             use_mel_frequency: bool = True) -> torch.Tensor:

@@ -1,4 +1,4 @@
-from typing import Union, Optional, Iterable
+from typing import Union, Optional, Iterable, Tuple
 import argparse
 import pathlib
 import os
@@ -60,8 +60,8 @@ def sample_model(model: PixelSNAIL, device: Union[torch.device, str],
         ]
     parallel_model = nn.DataParallel(model)
 
-    constraint_height = -1
-    constraint_width = -1
+    constraint_height = 0
+    constraint_width = 0
     if constraint is not None:
         if list(constraint.shape) > codemap_size:
             raise ValueError("Incorrect size of constraint, constraint "
@@ -85,10 +85,10 @@ def sample_model(model: PixelSNAIL, device: Union[torch.device, str],
 
     if model.predict_frequencies_first:
         for j in tqdm(range(codemap_size[1]), position=0):
-            start_column = (0 if j > constraint_width
-                            else constraint_height + 1)
-            for i in tqdm(range(start_column, codemap_size[0]), position=1):
-                out, cache = model(
+            start_row = (0 if j >= constraint_width
+                         else constraint_height)
+            for i in tqdm(range(start_row, codemap_size[0]), position=1):
+                out, cache = parallel_model(
                     codemap, condition=condition,
                     cache=cache,
                     class_conditioning=class_conditioning)
@@ -96,7 +96,17 @@ def sample_model(model: PixelSNAIL, device: Union[torch.device, str],
                 sample = torch.multinomial(prob, 1).squeeze(-1)
                 codemap[:, i, j] = sample
     else:
-        raise NotImplementedError
+        for i in tqdm(range(codemap_size[0]), position=0):
+            start_column = (0 if i >= constraint_height
+                            else constraint_width)
+            for j in tqdm(range(start_column, codemap_size[1]), position=1):
+                out, cache = parallel_model(
+                    codemap, condition=condition,
+                    cache=cache,
+                    class_conditioning=class_conditioning)
+                prob = torch.softmax(out[:, :, i, j] / temperature, 1)
+                sample = torch.multinomial(prob, 1).squeeze(-1)
+                codemap[:, i, j] = sample
 
     return codemap
 
@@ -104,6 +114,8 @@ def sample_model(model: PixelSNAIL, device: Union[torch.device, str],
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--batch_size', type=int, default=8)
+    parser.add_argument('--dataset', type=str, choices=['nsynth', 'imagenet'],
+                        required=True)
     parser.add_argument('--model_type_top', type=str,
                         choices=['PixelSNAIL', 'Transformer'],
                         default='PixelSNAIL')
@@ -126,6 +138,13 @@ if __name__ == '__main__':
     parser.add_argument('--pitch_conditioning_bottom', type=int, default=None)
     parser.add_argument('--instrument_family_conditioning_bottom', type=str,
                         default=None)
+
+    def key_value(arg: str) -> Iterable[Tuple[str, str]]:
+        key, value = arg.split(',')
+        return str(key), str(value)
+
+    parser.add_argument('--class_conditioning', type=key_value, nargs='*',
+                        default=[])
     # TODO(theis): change this, store label encoders inside the VQNSynthTransformer model class
     parser.add_argument('--database_path_for_label_encoders', type=str)
     parser.add_argument('--temperature', type=float, default=1.0)
@@ -181,17 +200,21 @@ if __name__ == '__main__':
         device=device
         ).to(device).eval()
 
-    classes_for_conditioning = []
+    classes_for_conditioning = set()
     if args.pitch_conditioning_top is not None or args.pitch_conditioning_bottom is not None:
-        classes_for_conditioning.append('pitch')
+        classes_for_conditioning.add('pitch')
     if args.instrument_family_conditioning_top is not None or args.instrument_family_conditioning_bottom is not None:
-        classes_for_conditioning.append('instrument_family')
+        classes_for_conditioning.add('instrument_family_str')
+
+    additional_modalities = set(modality
+                                for modality, _ in args.class_conditioning)
+    classes_for_conditioning.update(additional_modalities)
 
     if args.database_path_for_label_encoders is not None:
         DATABASE_PATH = pathlib.Path(args.database_path_for_label_encoders)
         dataset = LMDBDataset(
             DATABASE_PATH.expanduser().absolute(),
-            classes_for_conditioning=classes_for_conditioning
+            classes_for_conditioning=list(classes_for_conditioning)
         )
         label_encoders_per_conditioning = dataset.label_encoders
 
@@ -216,10 +239,14 @@ if __name__ == '__main__':
          args.instrument_family_conditioning_bottom,
          args.pitch_conditioning_top, args.pitch_conditioning_bottom,
          ],
-        ['instrument_family', 'instrument_family', 'pitch', 'pitch',],
+        ['instrument_family_str', 'instrument_family_str', 'pitch', 'pitch',],
         ['top', 'bottom', 'top', 'bottom']
     ):
         maybe_add_conditioning(value, modality, location)
+
+    for modality, value in args.class_conditioning:
+        for location in ['bottom', 'top']:
+            maybe_add_conditioning(value, modality, location)
 
     with torch.no_grad():
         if args.condition_top_audio_path is not None:
@@ -292,6 +319,7 @@ if __name__ == '__main__':
     with open(os.path.join(args.output_directory, f'{run_ID}-command_line_parameters.json'), 'w') as f:
         json.dump(args.__dict__, f)
 
+    if args.dataset == 'nsynth':
     audio_sample_path = os.path.join(args.output_directory, f'{run_ID}.wav')
     soundfile.write(audio_sample_path,
                     make_audio(decoded_sample, condition_top_audio),
@@ -311,3 +339,10 @@ if __name__ == '__main__':
             # range=(-1, 1),
             # scale_each=True,
         )
+    elif args.dataset == 'imagenet':
+        image_sample_path = os.path.join(args.output_directory, f'{run_ID}.png')
+        save_image(
+                decoded_sample,
+                image_sample_path,
+                nrow=args.batch_size
+            )

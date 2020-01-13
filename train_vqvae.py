@@ -1,10 +1,10 @@
+from typing import Optional, Union, Sequence
 from datetime import datetime
 import uuid
 import argparse
 import pathlib
 import pickle
 import json
-from typing import Optional
 from tqdm import tqdm
 import numpy as np
 import os
@@ -160,10 +160,10 @@ def evaluate(loader: DataLoader, model: nn.Module, device: str,
         latent_loss_total = 0
 
         model.eval()
-        for i, (img, pitch) in enumerate(loader):
+        for i, (img, _) in enumerate(loader):
             img = img.to(device)
 
-            out, latent_loss, perplexity_t, perplexity_b = model(img)
+            out, latent_loss, perplexity_t, perplexity_b, *_ = model(img)
             recon_loss = criterion(out, img)
             latent_loss = latent_loss.mean()
             loss = recon_loss + latent_loss_weight * latent_loss
@@ -203,11 +203,12 @@ if __name__ == '__main__':
     parser.add_argument('--num_embeddings', type=int, default=512)
     parser.add_argument('--num_hidden_channels', type=int, default=128)
     parser.add_argument('--num_residual_channels', type=int, default=32)
-    parser.add_argument('--epoch', type=int, default=560)
+    parser.add_argument('--num_training_epochs', type=int, default=560)
     parser.add_argument('--lr', type=float, default=3e-4)
     parser.add_argument('--dataset', type=str, choices=['nsynth', 'imagenet'])
     parser.add_argument('--dataset_type', choices=['hdf5', 'wav'],
                         default='wav')
+    parser.add_argument('--normalize_input_images', action='store_true')
     parser.add_argument('--groups', type=int, default=1)
     parser.add_argument('--sched', type=str)
     parser.add_argument('--batch_size', type=int, default=64)
@@ -215,6 +216,9 @@ if __name__ == '__main__':
                         help='Number of workers for the Dataloaders')
     parser.add_argument('--train_dataset_path', type=str)
     parser.add_argument('--validation_dataset_path', type=str)
+    parser.add_argument('--save_frequency', default=1, type=int,
+                        help=('Frequency (in epochs) at which to save'
+                              'trained weights'))
     parser.add_argument('--enable_image_dumps', action='store_true',
                         help=('Dump png pictures of the spectrograms during training.'
                               'WARNING: Takes up a lot of space!'))
@@ -254,18 +258,33 @@ if __name__ == '__main__':
     print("Loading dataset: ", dataset_name)
     vqvae_decoder_activation = None
     if dataset_name == 'imagenet':
-        transform = transforms.Compose(
-            [
-                transforms.Resize(args.size),
-                transforms.CenterCrop(args.size),
-                transforms.ToTensor(),
-                transforms.Normalize([0.5, 0.5, 0.5], [0.5, 0.5, 0.5])
+        def make_resize_transform(target_size: Union[int, Sequence[int]],
+                                  normalize: bool):
+            transformations = [
+                transforms.Resize(target_size),
+                transforms.CenterCrop(target_size),
+                transforms.ToTensor()
             ]
-        )
-        dataset = datasets.ImageFolder(train_dataset_path, transform=transform)
-        loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True,
-                            num_workers=4)
+            if normalize:
+                transformations.append(transforms.Normalize([0.5, 0.5, 0.5],
+                                                            [0.5, 0.5, 0.5]))
+            return transforms.Compose(transformations)
+
+        transform = make_resize_transform(args.size,
+                                          args.normalize_input_images)
+
+        train_dataset = datasets.ImageFolder(train_dataset_path,
+                                             transform=transform)
+        validation_dataset = datasets.ImageFolder(validation_dataset_path,
+                                                  transform=transform)
+        loader = DataLoader(train_dataset, batch_size=args.batch_size,
+                            shuffle=True, num_workers=args.num_workers)
+        validation_loader = DataLoader(validation_dataset,
+                                       batch_size=args.batch_size,
+                                       shuffle=True,
+                                       num_workers=args.num_workers)
         dataloader_for_gansynth_normalization = None
+        normalizer_statistics = None
         in_channel = 3
 
     elif dataset_name == 'nsynth':
@@ -364,7 +383,7 @@ if __name__ == '__main__':
 
         num_channels, height, width = sample.shape
         total_resolution_factor = 1
-        for layer_name, resolution_factor in resolution_factors.values():
+        for layer_name, resolution_factor in resolution_factors.items():
             total_resolution_factor *= resolution_factor
             print(f"Layer {layer_name}: ")
             print(f"\nAdditional downsampling factor {resolution_factor}")
@@ -405,16 +424,19 @@ if __name__ == '__main__':
     scheduler = None
     if args.sched == 'cycle':
         scheduler = CycleScheduler(
-            optimizer, args.lr, n_iter=len(loader) * args.epoch, momentum=None
+            optimizer, args.lr,
+            n_iter=len(loader) * args.num_training_epochs, momentum=None
         )
 
     MAIN_DIR = pathlib.Path(DIRPATH)
-    checkpoints_dir_path = MAIN_DIR / f'checkpoints/{run_ID}/'
+    CHECKPOINTS_DIR_PATH = MAIN_DIR / f'checkpoints/{run_ID}/'
     if not (args.dry_run or args.disable_writes_to_disk):
-        os.makedirs(checkpoints_dir_path, exist_ok=True)
+        os.makedirs(CHECKPOINTS_DIR_PATH, exist_ok=True)
 
+        with open(CHECKPOINTS_DIR_PATH / 'command_line_parameters.json', 'w') as f:
+            json.dump(args.__dict__, f)
         vqvae.store_instantiation_parameters(
-            checkpoints_dir_path / 'model_parameters.json')
+            CHECKPOINTS_DIR_PATH / 'model_parameters.json')
 
         os.makedirs(MAIN_DIR / f'samples/{run_ID}/', exist_ok=True)
 
@@ -425,7 +447,7 @@ if __name__ == '__main__':
         tensorboard_writer = SummaryWriter(tensorboard_dir_path)
 
     print("Starting training")
-    for epoch_index in range(start_epoch, args.epoch):
+    for epoch_index in range(start_epoch, args.num_training_epochs):
         train(epoch_index, loader, model, optimizer, scheduler, device,
               run_id=run_ID,
               enable_image_dumps=args.enable_image_dumps,
@@ -438,11 +460,13 @@ if __name__ == '__main__':
         if args.disable_writes_to_disk:
             pass
         else:
+            if (epoch_index == args.num_training_epochs - 1  # save last run
+                    or epoch_index-start_epoch % args.save_frequency == 0):
             checkpoint_filename = (f'vqvae_{dataset_name}_'
                                    f'{str(epoch_index + 1).zfill(3)}.pt')
             torch.save(
                     model.module.state_dict(),
-                    checkpoints_dir_path / checkpoint_filename
+                        CHECKPOINTS_DIR_PATH / checkpoint_filename
             )
 
         # eval on validation set
@@ -467,7 +491,9 @@ if __name__ == '__main__':
                                           global_step=epoch_index)
 
             # if i+1 % tensorboard_audio_interval_epochs == 0:
+            if dataset_name == 'nsynth':
             # add audio summaries
+
             samples, reconstructions = inference_vqvae.sample_reconstructions(
                 validation_loader)
             samples = samples[:3]
@@ -497,5 +523,19 @@ if __name__ == '__main__':
             tensorboard_writer.add_figure('Originals + Reconstructions (mel-scale, logspec/IF, validation data)',
                                           spec_figure,
                                           epoch_index)
+            elif dataset_name == 'imagenet':
+                if epoch_index % 5 == 0:
+                    for subset_name, subset_loader in [('training', loader),
+                                                       ('validation', validation_loader)]:
+                        with torch.no_grad():
+                            samples = subset_loader.__iter__().__next__()[0].to(device)[:16]
+                            reconstructions = model(samples)[0]
+                            samples_and_reconstructions = torch.cat(
+                                [samples, reconstructions], dim=0)
+                            utils.save_image(
+                                samples_and_reconstructions,
+                                os.path.join(DIRPATH, f'samples/{run_ID}/',
+                                            f'{str(epoch_index + 1).zfill(5)}_{subset_name}.png')
+                            )
 
             tensorboard_writer.flush()

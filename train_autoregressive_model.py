@@ -157,8 +157,7 @@ if __name__ == '__main__':
     parser.add_argument('--n_out_res_block', type=int, default=0)
     parser.add_argument('--n_cond_res_block', type=int, default=3)
     parser.add_argument('--classes_for_conditioning', type=str,
-                        choices=['pitch', 'instrument_family_str'], nargs='*',
-                        default=[])
+                        nargs='*', default=[])
     parser.add_argument('--class_conditioning_embedding_dim_per_modality',
                         type=int, default=16)
     parser.add_argument('--class_conditioning_prepend_to_dummy_input',
@@ -305,8 +304,9 @@ if __name__ == '__main__':
     model = nn.DataParallel(snail).to(device)
 
     MAIN_DIR = pathlib.Path(DIRPATH)
-    CHECKPOINTS_DIR_PATH = pathlib.Path(
-        f'checkpoints/code_prediction/vqvae-{args.vqvae_run_id}/{run_ID}/')
+    CHECKPOINTS_DIR_PATH = (
+        MAIN_DIR
+        / f'checkpoints/code_prediction/vqvae-{args.vqvae_run_id}/{run_ID}/')
     if not args.disable_writes_to_disk:
         os.makedirs(CHECKPOINTS_DIR_PATH, exist_ok=True)
         with open(CHECKPOINTS_DIR_PATH / 'command_line_parameters.json', 'w') as f:
