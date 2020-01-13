@@ -67,16 +67,17 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--main_output_dir', type=str, required=True)
     parser.add_argument('--checking_samples_dir', type=str, default=None)
-    parser.add_argument('--size', type=int, required=True)
     parser.add_argument('--batch_size', type=int, default=64)
     parser.add_argument('--num_workers', type=int, default=4,
                         help='Number of worker processes for the Dataloaders')
-    parser.add_argument('--dataset', type=str, choices=['nsynth', 'imagenet'])
+    parser.add_argument('--dataset', type=str, choices=['nsynth', 'imagenet'],
+                        required=True)
     parser.add_argument('--dataset_paths', type=str, nargs='+')
     parser.add_argument('--model_weights_path', type=str, required=True)
     parser.add_argument('--model_parameters_path', type=str, required=True)
     parser.add_argument('--command_line_parameters_path', type=str,
                         required=False)
+    parser.add_argument('--size', type=int)
     parser.add_argument('--disable_database_creation', action='store_true')
     parser.add_argument('--device', type=str, default='cpu',
                         choices=['cpu', 'cuda'])
@@ -98,7 +99,7 @@ if __name__ == '__main__':
         with open(OUTPUT_DIR / 'command_line_parameters.json', 'w') as f:
             json.dump(args.__dict__, f)
 
-    
+
     device = args.device
 
     dataset_paths = [
@@ -141,7 +142,7 @@ if __name__ == '__main__':
                     transformations.append(transforms.Normalize([0.5, 0.5, 0.5],
                                                                 [0.5, 0.5, 0.5]))
                 return transforms.Compose(transformations)
-            
+
             # retrieve size and normalization for the training process of the loaded model
             # TODO(theis:maybe): store those details within the model itself?
             VQVAE_COMMAND_LINE_PARAMETERS_PATH = pathlib.Path(
