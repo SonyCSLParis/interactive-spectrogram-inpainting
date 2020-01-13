@@ -64,6 +64,14 @@ def extract(lmdb_env, loader, model, device, dataset: str,
 
 
 if __name__ == '__main__':
+    class StoreDictKeyPair(argparse.Action):
+        def __call__(self, parser, namespace, values, option_string=None):
+            my_dict = {}
+            for kv in values.split(","):
+                k, v = kv.split("=")
+                my_dict[str(k)] = str(v)
+            setattr(namespace, self.dest, my_dict)
+
     parser = argparse.ArgumentParser()
     parser.add_argument('--main_output_dir', type=str, required=True)
     parser.add_argument('--checking_samples_dir', type=str, default=None)
@@ -72,7 +80,7 @@ if __name__ == '__main__':
                         help='Number of worker processes for the Dataloaders')
     parser.add_argument('--dataset', type=str, choices=['nsynth', 'imagenet'],
                         required=True)
-    parser.add_argument('--dataset_paths', type=str, nargs='+')
+    parser.add_argument('--named_dataset_paths', action=StoreDictKeyPair)
     parser.add_argument('--model_weights_path', type=str, required=True)
     parser.add_argument('--model_parameters_path', type=str, required=True)
     parser.add_argument('--command_line_parameters_path', type=str,
@@ -99,17 +107,21 @@ if __name__ == '__main__':
         with open(OUTPUT_DIR / 'command_line_parameters.json', 'w') as f:
             json.dump(args.__dict__, f)
 
-
     device = args.device
 
-    dataset_paths = [
-        pathlib.Path(dataset_path).expanduser().absolute()
-        for dataset_path in args.dataset_paths
-    ]
+    named_dataset_paths = {
+        dataset_name: pathlib.Path(dataset_path).expanduser().absolute()
+        for dataset_name, dataset_path in args.named_dataset_paths.items()
+    }
 
-    for dataset_path in dataset_paths:
+    assert (len(set([dataset.name for dataset in named_dataset_paths.values()]))
+            == len(named_dataset_paths.keys())), (
+                "Make sure all datasets have different names "
+                "otherwise the outputs will overwrite one another"
+                )
+
+    for dataset_name, dataset_path in named_dataset_paths.items():
         assert dataset_path.is_dir()
-        dataset_name = dataset_path.name
         if args.dataset == 'nsynth':
             valid_pitch_range = [24, 84]
 
