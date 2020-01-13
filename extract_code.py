@@ -114,9 +114,9 @@ if __name__ == '__main__':
         for dataset_name, dataset_path in args.named_dataset_paths.items()
     }
 
-    assert (len(set([dataset.name for dataset in named_dataset_paths.values()]))
+    assert (len(set(named_dataset_paths.keys()))
             == len(named_dataset_paths.keys())), (
-                "Make sure all datasets have different names "
+                "Use unique names for all datasets"
                 "otherwise the outputs will overwrite one another"
                 )
 
