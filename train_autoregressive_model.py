@@ -1,10 +1,12 @@
-from typing import Optional
+from typing import Optional, Iterable
 from datetime import datetime
 import uuid
 import argparse
 import os
 import pathlib
 import json
+import matplotlib as mpl
+import matplotlib.pyplot as plt
 
 import numpy as np
 import torch
@@ -25,10 +27,62 @@ from pixelsnail import PixelSNAIL, LabelSmoothingLoss
 from transformer import VQNSynthTransformer
 from scheduler import CycleScheduler
 
+# use matplotlib without an X server
+# on desktop, this prevents matplotlib windows from popping around
+mpl.use('Agg')
+
 DIRPATH = os.path.dirname(os.path.abspath(__file__))
 
 if torch.cuda.is_available():
     torch.set_default_tensor_type(torch.cuda.FloatTensor)
+
+
+def plot_codes(target_codemaps: torch.LongTensor,
+               predicted_codemaps: torch.LongTensor,
+               binary_success_maps: torch.LongTensor,
+               codes_dictionary_dim: int,
+               cmap='viridis', plots_per_row: int = 12) -> None:
+    assert (len(target_codemaps)
+            == len(predicted_codemaps)
+            == len(binary_success_maps))
+
+    num_maps = len(target_codemaps)
+    num_groups = 3
+    plots_per_row = min(num_maps, plots_per_row)
+    num_rows_per_codemaps_group = int(np.ceil(num_maps / plots_per_row))
+    num_rows = num_groups * num_rows_per_codemaps_group
+
+    figure, subplot_axs = plt.subplots(num_rows, plots_per_row,
+                                       figsize=(10, 2*num_rows))
+    for ax in subplot_axs.ravel().tolist():
+        ax.set_axis_off()
+
+    def get_ax(codemap_group_index: int, codemap_index: int):
+        start_row = codemap_group_index * num_rows_per_codemaps_group
+        row = start_row + codemap_index // plots_per_row
+        ax = subplot_axs[row][codemap_index % plots_per_row]
+        return ax
+
+    for group_index, maps_group in enumerate([target_codemaps,
+                                              predicted_codemaps]):
+        for map_index, codemap in enumerate(maps_group):
+            ax = get_ax(group_index, map_index)
+            im = ax.matshow(codemap.cpu().numpy(), vmin=0,
+                            vmax=codes_dictionary_dim-1,
+                            cmap=cmap)
+
+    # print success maps
+    codemap_group_index = 2
+    for map_index, success_map in enumerate(binary_success_maps):
+        ax = get_ax(codemap_group_index, map_index)
+        ax.matshow(success_map.cpu().numpy(), vmin=0, vmax=1,
+                   cmap='RdYlGn')
+
+    figure.tight_layout()
+    # add colorbar for codemaps
+    figure.colorbar(im,
+                    ax=(subplot_axs.ravel().tolist()))
+    return figure, subplot_axs
 
 
 def num_samples_in_loader(loader: torch.utils.data.DataLoader):
@@ -42,7 +96,9 @@ def num_samples_in_loader(loader: torch.utils.data.DataLoader):
 def run_model(args, epoch, loader, model, optimizer, scheduler, device,
               criterion: nn.Module,
               tensorboard_writer: Optional[SummaryWriter] = None,
-              is_training: bool = True):
+              is_training: bool = True,
+              plot_frequency_batch: int = 200,
+              num_codes_dictionary: int = None):
     run_type = 'training' if is_training else 'validation'
     status_bar = tqdm(total=0, position=0, bar_format='{desc}')
     tqdm_loader = tqdm(loader, position=1)
@@ -59,7 +115,7 @@ def run_model(args, epoch, loader, model, optimizer, scheduler, device,
     else:
         model = model.eval()
 
-    for i, (top, bottom, *class_conditioning_tensors) in enumerate(tqdm_loader):
+    for batch_index, (top, bottom, *class_conditioning_tensors) in enumerate(tqdm_loader):
         if is_training:
             model.zero_grad()
 
@@ -111,12 +167,33 @@ def run_model(args, epoch, loader, model, optimizer, scheduler, device,
         if is_training and tensorboard_writer is not None:
             # report metrics per batch
             loss_name = str(criterion)
-            tensorboard_writer.add_scalar(f'code_prediction-{run_type}_{args.hier}-{num_training_samples}_training_samples/{loss_name}',
-                                          loss,
-                                          num_samples_seen_total)
-            tensorboard_writer.add_scalar(f'code_prediction-{run_type}_{args.hier}-{num_training_samples}_training_samples/accuracy',
-                                          accuracy,
-                                          num_samples_seen_total)
+            tensorboard_writer.add_scalar(
+                f'code_prediction-{run_type}_{args.hier}-{num_training_samples}_training_samples/{loss_name}',
+                loss,
+                num_samples_seen_total)
+            tensorboard_writer.add_scalar(
+                f'code_prediction-{run_type}_{args.hier}-{num_training_samples}_training_samples/accuracy',
+                accuracy,
+                num_samples_seen_total)
+
+        if batch_index % plot_frequency_batch == 0:
+            num_plot_samples = min(batch_size, 10)
+            targets_plot_subset = target[:num_plot_samples]
+            preds_plot_subset = pred[:num_plot_samples]
+            success_maps_plot_subset = (targets_plot_subset
+                                        == preds_plot_subset).long()
+            # one row of input codemaps and one row of model-output codemaps
+            fig_codes, _ = plot_codes(targets_plot_subset,
+                                      preds_plot_subset,
+                                      success_maps_plot_subset,
+                                      num_codes_dictionary,
+                                      plots_per_row=num_plot_samples)
+            fig_codes.suptitle(f'{run_type.capitalize()}: Target and predicted codes, success map\n({num_samples_seen_total} training samples)')
+            tensorboard_writer.add_figure(
+                f'code_prediction-{run_type}_{args.hier}-{num_training_samples}_training_samples/Codes-Target-Output',
+                fig_codes,
+                num_samples_seen_total
+            )
 
     if not is_training and tensorboard_writer is not None:
         # only report metrics over full validation/test set
@@ -174,6 +251,7 @@ if __name__ == '__main__':
                               "contained in the provided PyTorch checkpoint"))
     parser.add_argument('--disable_writes_to_disk', action='store_true')
     parser.add_argument('--disable_tensorboard', action='store_true')
+    parser.add_argument('--plot_frequency_batch', type=int, default=200)
     parser.add_argument('--database_path', type=str, required=True)
     parser.add_argument('--validation_database_path', type=str, default=None)
     parser.add_argument('--num_training_samples', type=int,
@@ -342,7 +420,9 @@ if __name__ == '__main__':
     for epoch in range(initial_epoch, args.num_epochs):
         run_model(args, epoch, loader, model, optimizer, scheduler, device,
                   criterion, tensorboard_writer=tensorboard_writer,
-                  is_training=True)
+                  is_training=True,
+                  num_codes_dictionary=snail.n_class,
+                  plot_frequency_batch=args.plot_frequency_batch)
 
         checkpoint_dict = {
             'command_line_arguments': args.__dict__,
