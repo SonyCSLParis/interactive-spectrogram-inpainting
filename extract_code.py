@@ -94,7 +94,12 @@ if __name__ == '__main__':
 
     MAIN_DIR = pathlib.Path(args.main_output_dir)
 
-    VQVAE_MODEL_WEIGHTS_PATH = pathlib.Path(args.model_weights_path)
+    VQVAE_MODEL_WEIGHTS_PATH = (
+        pathlib.Path(args.model_weights_path).expanduser().absolute())
+    VQVAE_MODEL_PARAMETERS_PATH = (
+        pathlib.Path(args.model_parameters_path).expanduser().absolute())
+    assert (VQVAE_MODEL_WEIGHTS_PATH.is_file()
+            and VQVAE_MODEL_PARAMETERS_PATH.is_file())
     # folder containing the vqvae weights is the ID
     vqvae_id = VQVAE_MODEL_WEIGHTS_PATH.parts[-2]
     vqvae_model_filename = VQVAE_MODEL_WEIGHTS_PATH.stem
@@ -183,18 +188,18 @@ if __name__ == '__main__':
             label_encoders = {'class': classes_label_encoder}
             in_channel = 3
 
-        with open(args.model_parameters_path, 'r') as f:
-            vqvae_parameters = json.load(f)
+        vqvae = VQVAE.from_parameters_and_weights(
+            VQVAE_MODEL_PARAMETERS_PATH,
+            VQVAE_MODEL_WEIGHTS_PATH,
+            device=device)
 
-        vqvae = VQVAE(**vqvae_parameters)
-        vqvae.load_state_dict(torch.load(args.model_weights_path,
-                                         map_location=device))
-        inference_vqvae = InferenceVQVAE(vqvae, device=device,
-                                         hop_length=HOP_LENGTH,
-                                         n_fft=N_FFT)
         model = nn.DataParallel(vqvae)
         model = model.to(device)
         model.eval()
+
+        inference_vqvae = InferenceVQVAE(vqvae, device=device,
+                                         hop_length=HOP_LENGTH,
+                                         n_fft=N_FFT)
 
         # TODO(theis): compute appropriate size for the map
         map_size = 100 * 1024 * 1024 * 1024
@@ -210,7 +215,8 @@ if __name__ == '__main__':
         if args.checking_samples_dir:
             # check extracted codes
             codes_dataset = LMDBDataset(str(lmdb_path))
-            codes_loader = DataLoader(codes_dataset, batch_size=8, shuffle=True)
+            codes_loader = DataLoader(codes_dataset, batch_size=8,
+                                      shuffle=True)
             with torch.no_grad():
                 if args.dataset == 'nsynth':
                     codes_top_sample, codes_bottom_sample, instrument_families, pitches = (
