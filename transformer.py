@@ -303,6 +303,8 @@ class VQNSynthTransformer(nn.Module):
         condition_shape: Optional[Tuple[int, int]] = None,
         conditional_model_num_encoder_layers: int = 12,
         conditional_model_nhead: int = 16,
+        unconditional_model_num_encoder_layers: int = 6,
+        unconditional_model_nhead: int = 8,
     ):
         self.shape = shape
         self.conditional_model = conditional_model
@@ -338,8 +340,12 @@ class VQNSynthTransformer(nn.Module):
         self.class_conditioning_embedding_dim_per_modality = class_conditioning_embedding_dim_per_modality
         self.class_conditioning_prepend_to_dummy_input = class_conditioning_prepend_to_dummy_input
 
-        self.conditional_model_num_encoder_layers = conditional_model_num_encoder_layers
-        self.conditional_model_nhead = conditional_model_nhead
+        if self.conditional_model:
+            self.conditional_model_num_encoder_layers = conditional_model_num_encoder_layers
+            self.conditional_model_nhead = conditional_model_nhead
+        else:
+            self.unconditional_model_num_encoder_layers = unconditional_model_num_encoder_layers
+            self.unconditional_model_nhead = unconditional_model_nhead
 
         self._instantiation_parameters = self.__dict__.copy()
 
@@ -475,9 +481,12 @@ class VQNSynthTransformer(nn.Module):
                 num_encoder_layers=self.conditional_model_num_encoder_layers,
                 d_model=self.d_model)
         else:
-            encoder_layer = nn.TransformerEncoderLayer(d_model=512, nhead=8)
-            self.transformer = nn.TransformerEncoder(encoder_layer,
-                                                     num_layers=6)
+            encoder_layer = nn.TransformerEncoderLayer(
+                d_model=self.d_model,
+                nhead=self.unconditional_model_nhead)
+            self.transformer = nn.TransformerEncoder(
+                encoder_layer,
+                num_layers=self.unconditional_model_num_encoder_layers)
 
     def embed_data(self, input: torch.Tensor, kind: str) -> torch.Tensor:
         if kind == 'source':

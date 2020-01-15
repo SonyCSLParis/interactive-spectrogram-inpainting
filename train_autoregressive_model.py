@@ -339,6 +339,8 @@ if __name__ == '__main__':
             class_conditioning_num_classes_per_modality=class_conditioning_num_classes_per_modality,
             class_conditioning_embedding_dim_per_modality=class_conditioning_embedding_dim_per_modality,
             class_conditioning_prepend_to_dummy_input=args.class_conditioning_prepend_to_dummy_input,
+            unconditional_model_nhead=args.unconditional_model_nhead,
+            unconditional_model_num_encoder_layers=args.unconditional_model_num_encoder_layers
         )
     elif args.hier == 'bottom':
         snail = prediction_model(
