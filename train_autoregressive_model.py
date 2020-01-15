@@ -147,7 +147,7 @@ def run_model(args, epoch, loader, model, optimizer, scheduler, device,
 
         _, pred = out.max(1)
         correct = (pred == target).float()
-        accuracy = correct.sum() / target.numel()
+        accuracy = correct.sum() / correct.numel()
 
         lr = optimizer.param_groups[0]['lr']
 
