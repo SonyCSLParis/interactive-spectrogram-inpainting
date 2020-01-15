@@ -438,7 +438,8 @@ if __name__ == '__main__':
                 total_validation_loss, total_accuracy, num_validation_samples = run_model(
                     args, epoch, validation_loader, model, optimizer,
                     scheduler, device, criterion,
-                    tensorboard_writer=tensorboard_writer, is_training=False)
+                    tensorboard_writer=tensorboard_writer, is_training=False,
+                    num_codes_dictionary=snail.n_class)
             if total_validation_loss < best_validation_loss:
                 best_validation_loss = total_validation_loss
 
