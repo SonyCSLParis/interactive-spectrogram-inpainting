@@ -87,7 +87,6 @@ if __name__ == '__main__':
                         required=False)
     parser.add_argument('--size', type=int)
     parser.add_argument('--disable_database_creation', action='store_true')
-    parser.add_argument('--overwrite_existing_database', action='store_true')
     parser.add_argument('--device', type=str, default='cpu',
                         choices=['cpu', 'cuda'])
 
@@ -108,7 +107,7 @@ if __name__ == '__main__':
     OUTPUT_DIR = MAIN_DIR / f'vqvae-{vqvae_id}-weights-{vqvae_model_filename}/'
 
     if not args.disable_database_creation:
-        os.makedirs(OUTPUT_DIR, exist_ok=args.overwrite_existing_database)
+        os.makedirs(OUTPUT_DIR, exist_ok=False)
         # store command-line parameters
         with open(OUTPUT_DIR / 'command_line_parameters.json', 'w') as f:
             json.dump(args.__dict__, f)
