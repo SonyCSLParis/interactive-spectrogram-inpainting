@@ -251,6 +251,9 @@ if __name__ == '__main__':
     parser.add_argument('--conditional_model_nhead', type=int, default=16)
     parser.add_argument('--conditional_model_num_encoder_layers', type=int,
                         default=12)
+    parser.add_argument('--unconditional_model_nhead', type=int, default=8)
+    parser.add_argument('--unconditional_model_num_encoder_layers', type=int,
+                        default=6)
     parser.add_argument('--dropout', type=float, default=0.1)
     parser.add_argument('--predict_frequencies_first', action='store_true')
     parser.add_argument('--amp', type=str, default='O0')
