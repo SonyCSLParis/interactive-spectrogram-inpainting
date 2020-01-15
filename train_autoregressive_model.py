@@ -188,9 +188,10 @@ def run_model(args, epoch, loader, model, optimizer, scheduler, device,
                                       success_maps_plot_subset,
                                       num_codes_dictionary,
                                       plots_per_row=num_plot_samples)
-            fig_codes.suptitle(f'{run_type.capitalize()}: Target and predicted codes, success map\n({num_samples_seen_total} training samples)')
+            fig_codes.suptitle(f'{run_type.capitalize()}: Target and predicted codes, success map\n'
+                               f"(after {epoch} epoch{'s' if epoch > 1 else ''} of training)")
             tensorboard_writer.add_figure(
-                f'code_prediction-{run_type}_{args.hier}-{num_training_samples}_training_samples/Codes-Target-Output',
+                f'code_prediction-{run_type}_{args.hier}/Codes-Target-Output',
                 fig_codes,
                 num_samples_seen_total
             )
