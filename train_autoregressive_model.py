@@ -311,7 +311,7 @@ if __name__ == '__main__':
             args.validation_database_path,
             classes_for_conditioning=args.classes_for_conditioning)
         validation_loader = DataLoader(
-            validation_dataset, batch_size=args.batch_size, shuffle=False,
+            validation_dataset, batch_size=args.batch_size, shuffle=True,
             num_workers=args.num_workers, drop_last=False
         )
 
