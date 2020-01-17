@@ -43,6 +43,7 @@ def train(epoch: int, loader: DataLoader, model: nn.Module,
           device: str,
           inference_vqvae: InferenceVQVAE,
           run_id: str,
+          latent_loss_weight: float = 0.25,
           enable_image_dumps: bool = False,
           tensorboard_writer: Optional[SummaryWriter] = None,
           tensorboard_scalar_interval_epochs: int = 1,
@@ -55,7 +56,6 @@ def train(epoch: int, loader: DataLoader, model: nn.Module,
 
     criterion = nn.MSELoss()
 
-    latent_loss_weight = 0.25
     image_dump_sample_size = 25
 
     mse_sum = 0
@@ -145,13 +145,12 @@ def train(epoch: int, loader: DataLoader, model: nn.Module,
 
 
 def evaluate(loader: DataLoader, model: nn.Module, device: str,
+             latent_loss_weight: float = 0.25,
              dry_run: bool = False):
     with torch.no_grad():
         loader = tqdm(loader, desc='validation')
 
         criterion = nn.MSELoss()
-
-        latent_loss_weight = 0.25
 
         mse_sum = 0
         perplexity_t_sum = 0
@@ -205,6 +204,7 @@ if __name__ == '__main__':
     parser.add_argument('--num_residual_channels', type=int, default=32)
     parser.add_argument('--num_training_epochs', type=int, default=560)
     parser.add_argument('--lr', type=float, default=3e-4)
+    parser.add_argument('--latent_loss_weight', type=float, default=0.25)
     parser.add_argument('--dataset', type=str, choices=['nsynth', 'imagenet'])
     parser.add_argument('--dataset_type', choices=['hdf5', 'wav'],
                         default='wav')
@@ -450,6 +450,7 @@ if __name__ == '__main__':
     for epoch_index in range(start_epoch, args.num_training_epochs):
         train(epoch_index, loader, model, optimizer, scheduler, device,
               run_id=run_ID,
+              latent_loss_weight=args.latent_loss_weight,
               enable_image_dumps=args.enable_image_dumps,
               tensorboard_writer=tensorboard_writer,
               tensorboard_audio_interval_epochs=3,
@@ -473,7 +474,9 @@ if __name__ == '__main__':
         with torch.no_grad():
             (mse_validation, latent_loss_validation,
              perplexity_t_validation, perplexity_b_validation) = evaluate(
-                 validation_loader, model, device, args.dry_run)
+                 validation_loader, model,
+                 latent_loss_weight=args.latent_loss_weight,
+                 device, args.dry_run)
 
         if tensorboard_writer is not None and not (
                 args.dry_run or args.disable_writes_to_disk):
