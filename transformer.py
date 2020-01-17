@@ -552,7 +552,7 @@ class VQNSynthTransformer(nn.Module):
         return mask
 
     def prepare_data(self, input: torch.Tensor, kind: Optional[str] = None,
-                     class_conditioning: Optional[Iterable[torch.Tensor]] = None
+                     class_conditioning: Mapping[str, torch.Tensor] = {}
                      ) -> torch.Tensor:
         if not self.conditional_model:
             assert kind == 'source' or kind is None
@@ -580,10 +580,7 @@ class VQNSynthTransformer(nn.Module):
         # repeat start-symbol over whole batch
         start_symbol = start_symbol.repeat(batch_size, 1, 1)
 
-        if class_conditioning is not None:
-            for condition_name, class_condition in zip(
-                    self.class_conditioning_embedding_layers.keys(),
-                    class_conditioning):
+        for condition_name, class_condition in class_conditioning.items():
                 embeddings = (
                     self.class_conditioning_embedding_layers[
                         condition_name](class_condition)).squeeze(1)
@@ -634,7 +631,7 @@ class VQNSynthTransformer(nn.Module):
 
     def forward(self, input: torch.Tensor,
                 condition: Optional[torch.Tensor] = None,
-                class_conditioning: Optional[Iterable[torch.Tensor]] = None,
+                class_conditioning: Mapping[str, torch.Tensor] = {},
                 cache: Optional[Mapping[str, torch.Tensor]] = None):
         batch_dim, frequency_dim, time_dim, embedding_dim = (0, 1, 2, 3)
         batch_size = input.shape[0]

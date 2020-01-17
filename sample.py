@@ -1,4 +1,4 @@
-from typing import Union, Optional, Iterable, Tuple
+from typing import Union, Optional, Iterable, Tuple, Mapping
 import argparse
 import pathlib
 import os
@@ -30,7 +30,7 @@ def sample_model(model: PixelSNAIL, device: Union[torch.device, str],
                  batch_size: int, codemap_size: Iterable[int],
                  temperature: float, condition: Optional[torch.Tensor] = None,
                  constraint: Optional[torch.Tensor] = None,
-                 class_conditioning: Optional[Iterable[int]] = None):
+                 class_conditioning: Mapping[str, Iterable[int]] = {}):
     """Generate a sample from the provided PixelSNAIL
 
     Arguments:
@@ -53,11 +53,14 @@ def sample_model(model: PixelSNAIL, device: Union[torch.device, str],
     codemap = (torch.zeros(batch_size, *codemap_size, dtype=torch.int64)
                .to(device)
                )
-    if class_conditioning is not None:
-        class_conditioning = [
-            tensor.long().repeat(batch_size, 1).to(device)
-            for tensor in class_conditioning
-        ]
+        class_conditioning = {
+            conditioning_modality: (
+                conditioning_tensor.long()
+                .repeat(batch_size, 1)
+                .to(device))
+            for conditioning_modality, conditioning_tensor
+            in class_conditioning.items()
+        }
     parallel_model = nn.DataParallel(model)
 
     constraint_height = 0
@@ -218,8 +221,8 @@ if __name__ == '__main__':
         )
         label_encoders_per_conditioning = dataset.label_encoders
 
-    class_conditioning_top = []
-    class_conditioning_bottom = []
+    class_conditioning_top = {}
+    class_conditioning_bottom = {}
 
     def maybe_add_conditioning(value, modality: str, location: str) -> None:
         if value is None:
@@ -228,9 +231,11 @@ if __name__ == '__main__':
         encoded_label = label_encoder.transform([value])
 
         if location == 'top':
-            class_conditioning_top.append(torch.from_numpy(encoded_label).long())
+            class_conditioning_top[modality] = (
+                torch.from_numpy(encoded_label).long())
         elif location == 'bottom':
-            class_conditioning_bottom.append(torch.from_numpy(encoded_label).long())
+            class_conditioning_bottom[modality] = (
+                torch.from_numpy(encoded_label).long())
         else:
             raise ValueError("Invalid location")
 
