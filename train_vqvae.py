@@ -52,7 +52,9 @@ def train(epoch: int, loader: DataLoader, model: nn.Module,
           tensorboard_num_audio_samples: int = 10,
           dry_run: bool = False
           ) -> None:
-    loader = tqdm(loader, position=1)
+    num_samples_in_dataset = len(loader.dataset)
+
+    tqdm_loader = tqdm(loader, position=1)
     status_bar = tqdm(total=0, position=0, bar_format='{desc}')
 
     criterion = nn.MSELoss()
@@ -61,10 +63,11 @@ def train(epoch: int, loader: DataLoader, model: nn.Module,
 
     mse_sum = 0
     mse_n = 0
-    num_samples_seen = 0
+    num_samples_seen_epoch = 0
+    num_samples_seen_total = epoch * num_samples_in_dataset
 
     model.train()
-    for i, (img, _) in enumerate(loader):
+    for i, (img, _) in enumerate(tqdm_loader):
         model.zero_grad()
 
         img = img.to(device)
@@ -79,10 +82,12 @@ def train(epoch: int, loader: DataLoader, model: nn.Module,
             scheduler.step()
         optimizer.step()
 
-        batch_size = img.shape[0]  # could vary if e.g. drop-last=False in loader
+        batch_size = img.shape[0]
         mse_batch = recon_loss.item()
         mse_sum += mse_batch * batch_size
-        num_samples_seen += batch_size
+
+        num_samples_seen_epoch += batch_size
+        num_samples_seen_total += batch_size
 
         lr = optimizer.param_groups[0]['lr']
 
@@ -91,27 +96,24 @@ def train(epoch: int, loader: DataLoader, model: nn.Module,
         status_bar.set_description_str(
             (
                 f'epoch: {epoch + 1}; '
-                f'avg mse: {mse_sum / num_samples_seen:.4f}; mse: {mse_batch:.4f}; latent: {batch_latent_loss:.4f}; '
+                f'avg mse: {mse_sum / num_samples_seen_epoch:.4f}; mse: {mse_batch:.4f}; latent: {batch_latent_loss:.4f}; '
                 f'perpl_bottom: {perplexity_b.mean():.4f}; perpl_top: {perplexity_t.mean():.4f}'
             )
         )
         if tensorboard_writer is not None:
             # add scalar summaries
-            num_batches_seen = epoch*len(loader) + i
-            num_samples_seen = num_batches_seen * img.shape[0]
-
             tensorboard_writer.add_scalar('training/reconstruction_mse',
                                           batch_reconstruction_mse,
-                                          num_samples_seen)
+                                          num_samples_seen_total)
             tensorboard_writer.add_scalar('training/latent_loss',
                                           batch_latent_loss,
-                                          num_samples_seen)
+                                          num_samples_seen_total)
             tensorboard_writer.add_scalar('training/perplexity_top',
                                           perplexity_t.mean(),
-                                          num_samples_seen)
+                                          num_samples_seen_total)
             tensorboard_writer.add_scalar('training/perplexity_bottom',
                                           perplexity_b.mean(),
-                                          num_samples_seen)
+                                          num_samples_seen_total)
 
         if enable_image_dumps and i % 100 == 0:
             model.eval()
@@ -149,13 +151,15 @@ def evaluate(loader: DataLoader, model: nn.Module, device: str,
              latent_loss_weight: float = 0.25,
              dry_run: bool = False):
     with torch.no_grad():
+        num_samples_in_dataset = len(loader.dataset)
+
         loader = tqdm(loader, desc='validation')
 
         criterion = nn.MSELoss()
 
-        mse_sum = 0
-        perplexity_t_sum = 0
-        perplexity_b_sum = 0
+        mse_total = 0
+        perplexity_t_total = 0
+        perplexity_b_total = 0
         mse_n = 0
         latent_loss_total = 0
 
@@ -165,21 +169,20 @@ def evaluate(loader: DataLoader, model: nn.Module, device: str,
 
             out, latent_loss, perplexity_t, perplexity_b, *_ = model(img)
             recon_loss = criterion(out, img)
-            latent_loss = latent_loss.mean()
-            loss = recon_loss + latent_loss_weight * latent_loss
+            latent_loss_mean = latent_loss.mean()
+            loss = recon_loss + latent_loss_weight * latent_loss_mean
 
-            mse_sum += recon_loss * img.shape[0]
-            perplexity_t_sum += perplexity_t.mean()
-            perplexity_b_sum += perplexity_b.mean()
-            mse_n += img.shape[0]
-            latent_loss_total += latent_loss
+            mse_total += recon_loss * img.shape[0]
+            perplexity_t_total += perplexity_t.sum()
+            perplexity_b_total += perplexity_b.sum()
+            latent_loss_total += latent_loss.sum()
             if args.dry_run:
                 break
 
-        mse_average = mse_sum.item() / mse_n
-        latent_loss_average = latent_loss_total.item() / len(loader)
-        perplexity_t_average = perplexity_t_sum.item() / len(loader)
-        perplexity_b_average = perplexity_b_sum.item() / len(loader)
+        mse_average = mse_total.item() / num_samples_in_dataset
+        latent_loss_average = latent_loss_total.item() / num_samples_in_dataset
+        perplexity_t_average = perplexity_t_total.item() / num_samples_in_dataset
+        perplexity_b_average = perplexity_b_total.item() / num_samples_in_dataset
 
         return (mse_average, latent_loss_average,
                 perplexity_t_average, perplexity_b_average)
