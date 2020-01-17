@@ -22,6 +22,7 @@ from scheduler import CycleScheduler
 from nsynth_dataset import NSynthH5Dataset
 from GANsynth_pytorch.pytorch_nsynth_lib.nsynth import (
     NSynth, WavToSpectrogramDataLoader)
+from GANsynth_pytorch.normalizer import DataNormalizer
 import GANsynth_pytorch.utils.plots as gansynthplots
 
 import matplotlib as mpl
@@ -338,10 +339,20 @@ if __name__ == '__main__':
         dataloader_for_gansynth_normalization = None
         normalizer_statistics = None
         if args.precomputed_normalization_statistics is not None:
-            with open(args.precomputed_normalization_statistics, 'rb') as f:
-                normalizer_statistics = pickle.load(f)
+            data_normalizer = DataNormalizer.load_statistics(
+                args.precomputed_normalization_statistics)
+            normalizer_statistics = data_normalizer.statistics
         elif args.input_normalization:
             dataloader_for_gansynth_normalization = loader
+            # compute normalization parameters
+            data_normalizer = DataNormalizer(
+                dataloader=dataloader_for_gansynth_normalization)
+            # store normalization parameters
+            normalization_statistics_path = (
+                train_dataset_json_data_path.parent
+                / 'normalization_statistics.json')
+            data_normalizer.dump_statistics(normalization_statistics_path)
+            normalizer_statistics = data_normalizer.statistics
     else:
         raise ValueError("Unrecognized dataset name: ",
                          dataset_name)
@@ -394,15 +405,9 @@ if __name__ == '__main__':
 
     print_resolution_summary(loader, args.resolution_factors)
 
-    vqvae = VQVAE(dataloader_for_gansynth_normalization=dataloader_for_gansynth_normalization,
-                  normalizer_statistics=normalizer_statistics,
+    vqvae = VQVAE(normalizer_statistics=normalizer_statistics,
                   **vqvae_parameters
                   )
-    if dataloader_for_gansynth_normalization is not None:
-        # store normalization parameters
-        data_normalizer = vqvae.data_normalizer
-        normalization_statistics_path = path / '../normalization_statistics.pkl'
-        data_normalizer.dump_statistics(normalization_statistics_path)
 
     model = nn.DataParallel(vqvae).to(device)
 

@@ -8,7 +8,8 @@ from torch import nn
 from torch.nn import functional as F
 
 import GANsynth_pytorch
-from GANsynth_pytorch.normalizer import DataNormalizer
+from GANsynth_pytorch.normalizer import (DataNormalizer,
+                                         DataNormalizerStatistics)
 
 
 # Copyright 2018 The Sonnet Authors. All Rights Reserved.
@@ -310,8 +311,8 @@ class VQVAE(nn.Module):
         },
         embeddings_initial_variance: float = 1,
         decoder_output_activation: Optional[nn.Module] = None,
-        dataloader_for_gansynth_normalization: Optional[torch.utils.data.DataLoader] = None,
-        normalizer_statistics: Optional[object] = None,
+        normalizer_statistics: Optional[
+            Union[DataNormalizerStatistics, Mapping[str, float]]] = None,
         corruption_weights: Mapping[str, Optional[List[float]]] = {'top': None,
                                                                    'bottom': None}
     ):
@@ -327,9 +328,12 @@ class VQVAE(nn.Module):
         self.resolution_factors = resolution_factors
         self.embeddings_initial_variance = embeddings_initial_variance
         self.decoder_output_activation = decoder_output_activation
-        self.dataloader_for_gansynth_normalization = dataloader_for_gansynth_normalization
-        self.normalizer_statistics = normalizer_statistics
         self.corruption_weights = corruption_weights
+
+        if isinstance(normalizer_statistics, DataNormalizerStatistics):
+            self.normalizer_statistics = normalizer_statistics.__dict__
+        else:
+            self.normalizer_statistics = normalizer_statistics
 
         self._instantiation_parameters = self.__dict__.copy()
 
@@ -392,15 +396,15 @@ class VQVAE(nn.Module):
             groups=self.groups
         )
 
-        self.use_gansynth_normalization = (
-            self.dataloader_for_gansynth_normalization is not None
-            or self.normalizer_statistics is not None)
-        self.dataloader = self.dataloader_for_gansynth_normalization
-        self.normalizer_statistics = self.normalizer_statistics
-        if self.normalizer_statistics:
-            self.data_normalizer = DataNormalizer(**self.normalizer_statistics)
-        elif self.dataloader:
-            self.data_normalizer = DataNormalizer(self.dataloader)
+        self.use_gansynth_normalization = (self.normalizer_statistics
+                                           is not None)
+
+        if self.use_gansynth_normalization:
+            data_normalizer_statistics = DataNormalizerStatistics(
+                self.normalizer_statistics)
+            self.data_normalizer = DataNormalizer(data_normalizer_statistics)
+        else:
+            self.data_normalizer = None
 
     def forward(self, input):
         if self.use_gansynth_normalization:
