@@ -402,7 +402,7 @@ if __name__ == '__main__':
     if not args.disable_writes_to_disk:
         os.makedirs(CHECKPOINTS_DIR_PATH, exist_ok=True)
         with open(CHECKPOINTS_DIR_PATH / 'command_line_parameters.json', 'w') as f:
-            json.dump(args.__dict__, f)
+            json.dump(args.__dict__, f, indent=4)
         snail.store_instantiation_parameters(
             CHECKPOINTS_DIR_PATH / 'model_instantiation_parameters.json')
 

@@ -566,7 +566,7 @@ class PixelSNAIL(nn.Module):
     def store_instantiation_parameters(self, path: pathlib.Path) -> None:
         """Store the parameters used to create this instance as JSON"""
         with open(path, 'w') as f:
-            json.dump(self._instantiation_parameters, f)
+            json.dump(self._instantiation_parameters, f, indent=4)
 
 
 class LabelSmoothingLoss(nn.Module):
