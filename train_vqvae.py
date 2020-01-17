@@ -455,7 +455,7 @@ if __name__ == '__main__':
         os.makedirs(CHECKPOINTS_DIR_PATH, exist_ok=True)
 
         with open(CHECKPOINTS_DIR_PATH / 'command_line_parameters.json', 'w') as f:
-            json.dump(args.__dict__, f)
+            json.dump(args.__dict__, f, indent=4)
         vqvae.store_instantiation_parameters(
             CHECKPOINTS_DIR_PATH / 'model_parameters.json')
 
@@ -484,12 +484,12 @@ if __name__ == '__main__':
         else:
             if (epoch_index == args.num_training_epochs - 1  # save last run
                     or epoch_index-start_epoch % args.save_frequency == 0):
-            checkpoint_filename = (f'vqvae_{dataset_name}_'
-                                   f'{str(epoch_index + 1).zfill(3)}.pt')
-            torch.save(
-                    model.module.state_dict(),
+                checkpoint_filename = (f'vqvae_{dataset_name}_'
+                                       f'{str(epoch_index + 1).zfill(3)}.pt')
+                torch.save(
+                        model.module.state_dict(),
                         CHECKPOINTS_DIR_PATH / checkpoint_filename
-            )
+                )
 
         # eval on validation set
         with torch.no_grad():
@@ -516,37 +516,37 @@ if __name__ == '__main__':
 
             # if i+1 % tensorboard_audio_interval_epochs == 0:
             if dataset_name == 'nsynth':
-            # add audio summaries
+                # add audio summaries
 
                 samples, reconstructions, *_ = inference_vqvae.sample_reconstructions(
-                validation_loader)
-            samples = samples[:3]
-            reconstructions = reconstructions[:3]
-            samples_audio = inference_vqvae.mag_and_IF_to_audio(
-                samples, use_mel_frequency=True)
-            reconstructions_audio = inference_vqvae.mag_and_IF_to_audio(
-                reconstructions, use_mel_frequency=True)
-            tensorboard_writer.add_audio('Original (end of epoch, validation data)',
-                                         samples_audio.flatten(),
-                                         epoch_index)
-            tensorboard_writer.add_audio('Reconstructions (end of epoch, validation data)',
-                                         reconstructions_audio.flatten(),
-                                         epoch_index)
-            mel_specs_original, mel_IFs_original = (
-                np.swapaxes(samples.data.cpu().numpy(), 0, 1))
-            mel_specs_reconstructions, mel_IFs_reconstructions = (
-                np.swapaxes(reconstructions.data.cpu().numpy(), 0, 1))
-            mel_specs = np.concatenate([mel_specs_original,
-                                        mel_specs_reconstructions], axis=0)
-            mel_IFs = np.concatenate([mel_IFs_original,
-                                      mel_IFs_reconstructions], axis=0)
+                    validation_loader)
+                samples = samples[:3]
+                reconstructions = reconstructions[:3]
+                samples_audio = inference_vqvae.mag_and_IF_to_audio(
+                    samples, use_mel_frequency=True)
+                reconstructions_audio = inference_vqvae.mag_and_IF_to_audio(
+                    reconstructions, use_mel_frequency=True)
+                tensorboard_writer.add_audio('Original (end of epoch, validation data)',
+                                             samples_audio.flatten(),
+                                             epoch_index)
+                tensorboard_writer.add_audio('Reconstructions (end of epoch, validation data)',
+                                             reconstructions_audio.flatten(),
+                                             epoch_index)
+                mel_specs_original, mel_IFs_original = (
+                    np.swapaxes(samples.data.cpu().numpy(), 0, 1))
+                mel_specs_reconstructions, mel_IFs_reconstructions = (
+                    np.swapaxes(reconstructions.data.cpu().numpy(), 0, 1))
+                mel_specs = np.concatenate([mel_specs_original,
+                                            mel_specs_reconstructions], axis=0)
+                mel_IFs = np.concatenate([mel_IFs_original,
+                                          mel_IFs_reconstructions], axis=0)
 
-            spec_figure, _ = gansynthplots.plot_mel_representations_batch(
-                log_melspecs=mel_specs, mel_IFs=mel_IFs,
-                hop_length=HOP_LENGTH, fs_hz=FS_HZ)
-            tensorboard_writer.add_figure('Originals + Reconstructions (mel-scale, logspec/IF, validation data)',
-                                          spec_figure,
-                                          epoch_index)
+                spec_figure, _ = gansynthplots.plot_mel_representations_batch(
+                    log_melspecs=mel_specs, mel_IFs=mel_IFs,
+                    hop_length=HOP_LENGTH, fs_hz=FS_HZ)
+                tensorboard_writer.add_figure('Originals + Reconstructions (mel-scale, logspec/IF, validation data)',
+                                              spec_figure,
+                                              epoch_index)
             elif dataset_name == 'imagenet':
                 if epoch_index % 5 == 0:
                     for subset_name, subset_loader in [('training', loader),
@@ -559,7 +559,7 @@ if __name__ == '__main__':
                             utils.save_image(
                                 samples_and_reconstructions,
                                 os.path.join(DIRPATH, f'samples/{run_ID}/',
-                                            f'{str(epoch_index + 1).zfill(5)}_{subset_name}.png')
+                                             f'{str(epoch_index + 1).zfill(5)}_{subset_name}.png')
                             )
 
             tensorboard_writer.flush()

@@ -338,13 +338,13 @@ class VQNSynthTransformer(nn.Module):
         start_symbol = start_symbol.repeat(batch_size, 1, 1)
 
         for condition_name, class_condition in class_conditioning.items():
-                embeddings = (
-                    self.class_conditioning_embedding_layers[
-                        condition_name](class_condition)).squeeze(1)
-                start_position = (
-                    self.class_conditioning_start_positions_per_modality[
-                        condition_name])
-                start_symbol[:, 0, start_position:start_position+embeddings.shape[1]] = embeddings
+            embeddings = (
+                self.class_conditioning_embedding_layers[
+                    condition_name](class_condition)).squeeze(1)
+            start_position = (
+                self.class_conditioning_start_positions_per_modality[
+                    condition_name])
+            start_symbol[:, 0, start_position:start_position+embeddings.shape[1]] = embeddings
 
         input_with_positions = torch.cat(
             [embedded_input, positional_embeddings.repeat(batch_size, 1, 1, 1)],
@@ -490,4 +490,4 @@ class VQNSynthTransformer(nn.Module):
     def store_instantiation_parameters(self, path: pathlib.Path) -> None:
         """Store the parameters used to create this instance as JSON"""
         with open(path, 'w') as f:
-            json.dump(self._instantiation_parameters, f)
+            json.dump(self._instantiation_parameters, f, indent=4)

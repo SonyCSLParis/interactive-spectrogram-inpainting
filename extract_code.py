@@ -110,7 +110,7 @@ if __name__ == '__main__':
         os.makedirs(OUTPUT_DIR, exist_ok=False)
         # store command-line parameters
         with open(OUTPUT_DIR / 'command_line_parameters.json', 'w') as f:
-            json.dump(args.__dict__, f)
+            json.dump(args.__dict__, f, indent=4)
 
     device = args.device
 

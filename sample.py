@@ -53,14 +53,14 @@ def sample_model(model: PixelSNAIL, device: Union[torch.device, str],
     codemap = (torch.zeros(batch_size, *codemap_size, dtype=torch.int64)
                .to(device)
                )
-        class_conditioning = {
-            conditioning_modality: (
-                conditioning_tensor.long()
-                .repeat(batch_size, 1)
-                .to(device))
-            for conditioning_modality, conditioning_tensor
-            in class_conditioning.items()
-        }
+    class_conditioning = {
+        conditioning_modality: (
+            conditioning_tensor.long()
+            .repeat(batch_size, 1)
+            .to(device))
+        for conditioning_modality, conditioning_tensor
+        in class_conditioning.items()
+    }
     parallel_model = nn.DataParallel(model)
 
     constraint_height = 0
@@ -322,28 +322,28 @@ if __name__ == '__main__':
 
     os.makedirs(args.output_directory, exist_ok=True)
     with open(os.path.join(args.output_directory, f'{run_ID}-command_line_parameters.json'), 'w') as f:
-        json.dump(args.__dict__, f)
+        json.dump(args.__dict__, f, indent=4)
 
     if args.dataset == 'nsynth':
-    audio_sample_path = os.path.join(args.output_directory, f'{run_ID}.wav')
-    soundfile.write(audio_sample_path,
-                    make_audio(decoded_sample, condition_top_audio),
-                    samplerate=args.sample_rate_hz)
+        audio_sample_path = os.path.join(args.output_directory, f'{run_ID}.wav')
+        soundfile.write(audio_sample_path,
+                        make_audio(decoded_sample, condition_top_audio),
+                        samplerate=args.sample_rate_hz)
 
-    # write spectrogram and IF
-    channel_dim = 1
-    for channel_index, channel_name in enumerate(
-            ['spectrogram', 'instantaneous_frequency']):
-        channel = decoded_sample.select(channel_dim, channel_index
-                                        ).unsqueeze(channel_dim)
-        save_image(
-            channel,
-            os.path.join(args.output_directory, f'{run_ID}-{channel_name}.png'),
-            nrow=args.batch_size,
-            # normalize=True,
-            # range=(-1, 1),
-            # scale_each=True,
-        )
+        # write spectrogram and IF
+        channel_dim = 1
+        for channel_index, channel_name in enumerate(
+                ['spectrogram', 'instantaneous_frequency']):
+            channel = decoded_sample.select(channel_dim, channel_index
+                                            ).unsqueeze(channel_dim)
+            save_image(
+                channel,
+                os.path.join(args.output_directory, f'{run_ID}-{channel_name}.png'),
+                nrow=args.batch_size,
+                # normalize=True,
+                # range=(-1, 1),
+                # scale_each=True,
+            )
     elif args.dataset == 'imagenet':
         image_sample_path = os.path.join(args.output_directory, f'{run_ID}.png')
         save_image(
