@@ -494,7 +494,7 @@ if __name__ == '__main__':
             if dataset_name == 'nsynth':
             # add audio summaries
 
-            samples, reconstructions = inference_vqvae.sample_reconstructions(
+                samples, reconstructions, *_ = inference_vqvae.sample_reconstructions(
                 validation_loader)
             samples = samples[:3]
             reconstructions = reconstructions[:3]
