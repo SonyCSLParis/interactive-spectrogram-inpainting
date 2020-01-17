@@ -215,8 +215,11 @@ if __name__ == '__main__':
     parser.add_argument('--batch_size', type=int, default=64)
     parser.add_argument('--num_workers', type=int, default=4,
                         help='Number of workers for the Dataloaders')
-    parser.add_argument('--train_dataset_path', type=str)
-    parser.add_argument('--validation_dataset_path', type=str)
+    parser.add_argument('--dataset_audio_directory_paths', type=str,
+                        nargs='+')
+    parser.add_argument('--train_dataset_json_data_path', type=str,
+                        required=True)
+    parser.add_argument('--validation_dataset_json_data_path', type=str)
     parser.add_argument('--save_frequency', default=1, type=int,
                         help=('Frequency (in epochs) at which to save'
                               'trained weights'))
@@ -253,8 +256,16 @@ if __name__ == '__main__':
 
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
-    train_dataset_path = pathlib.Path(args.train_dataset_path)
-    validation_dataset_path = pathlib.Path(args.validation_dataset_path)
+    def expand_path(path: str) -> pathlib.Path:
+        return pathlib.Path(path).expanduser().absolute()
+
+    audio_directory_paths = [expand_path(path)
+                             for path in args.dataset_audio_directory_paths]
+
+    train_dataset_json_data_path = expand_path(
+        args.train_dataset_json_data_path)
+    validation_dataset_json_data_path = expand_path(
+        args.validation_dataset_json_data_path)
     dataset_name = args.dataset
     print("Loading dataset: ", dataset_name)
     vqvae_decoder_activation = None
@@ -300,14 +311,16 @@ if __name__ == '__main__':
                                        n_fft=N_FFT, hop_length=HOP_LENGTH)
 
             nsynth_dataset = NSynth(
-                root=str(train_dataset_path),
+                audio_directory_paths=audio_directory_paths,
+                json_data_path=train_dataset_json_data_path,
                 valid_pitch_range=valid_pitch_range,
                 categorical_field_list=[],
                 squeeze_mono_channel=True)
 
-            if args.validation_dataset_path:
+            if args.validation_dataset_json_data_path:
                 nsynth_validation_dataset = NSynth(
-                    root=str(validation_dataset_path),
+                    audio_directory_paths=audio_directory_paths,
+                    json_data_path=validation_dataset_json_data_path,
                     valid_pitch_range=valid_pitch_range,
                     categorical_field_list=[],
                     squeeze_mono_channel=True)
