@@ -496,8 +496,8 @@ if __name__ == '__main__':
             (mse_validation, latent_loss_validation,
              perplexity_t_validation, perplexity_b_validation) = evaluate(
                  validation_loader, model,
-                 latent_loss_weight=args.latent_loss_weight,
-                 device, args.dry_run)
+                 device, dry_run=args.dry_run,
+                 latent_loss_weight=args.latent_loss_weight)
 
         if tensorboard_writer is not None and not (
                 args.dry_run or args.disable_writes_to_disk):
