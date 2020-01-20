@@ -2,7 +2,7 @@ from typing import Iterable, Mapping, Optional
 import os
 import pickle
 import numpy as np
-from collections import namedtuple
+from collections import namedtuple, OrderedDict
 
 import torch
 from torch.utils.data import Dataset
@@ -75,9 +75,9 @@ class LMDBDataset(Dataset):
 
             row = pickle.loads(txn.get(key))
 
-        attributes = {
-            attribute_name: attribute_value.view(1)
-            for attribute_name, attribute_value in row.attributes.items()}
+        attributes = OrderedDict()
+        for class_name in self.classes_for_conditioning:
+            attributes[class_name] = row.attributes[class_name].view(1)
 
         return (torch.from_numpy(row.top), torch.from_numpy(row.bottom),
-                *attributes.values())
+                attributes)

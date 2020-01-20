@@ -115,13 +115,14 @@ def run_model(args, epoch, loader, model, optimizer, scheduler, device,
     else:
         model = model.eval()
 
-    for batch_index, (top, bottom, *class_conditioning_tensors) in enumerate(tqdm_loader):
+    for batch_index, (top, bottom, class_conditioning_tensors) in enumerate(tqdm_loader):
         if is_training:
             model.zero_grad()
 
-        class_conditioning_tensors = [
-            condition_tensor.to(device)
-            for condition_tensor in class_conditioning_tensors]
+        class_conditioning_tensors = {
+            condition_name: condition_tensor.to(device)
+            for condition_name, condition_tensor
+            in class_conditioning_tensors.items()}
 
         top = top.to(device)
 
