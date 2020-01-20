@@ -80,10 +80,13 @@ if __name__ == '__main__':
                         help='Number of worker processes for the Dataloaders')
     parser.add_argument('--dataset', type=str, choices=['nsynth', 'imagenet'],
                         required=True)
-    parser.add_argument('--named_dataset_paths', action=StoreDictKeyPair)
+    parser.add_argument('--dataset_audio_directory_paths', type=str,
+                        nargs='+')
+    parser.add_argument('--named_dataset_json_data_paths',
+                        action=StoreDictKeyPair)
     parser.add_argument('--model_weights_path', type=str, required=True)
     parser.add_argument('--model_parameters_path', type=str, required=True)
-    parser.add_argument('--command_line_parameters_path', type=str,
+    parser.add_argument('--vqvae_command_line_parameters_path', type=str,
                         required=False)
     parser.add_argument('--size', type=int)
     parser.add_argument('--disable_database_creation', action='store_true')
@@ -114,29 +117,57 @@ if __name__ == '__main__':
 
     device = args.device
 
-    named_dataset_paths = {
-        dataset_name: pathlib.Path(dataset_path).expanduser().absolute()
-        for dataset_name, dataset_path in args.named_dataset_paths.items()
+    def expand_path(path: str) -> pathlib.Path:
+        return pathlib.Path(path).expanduser().absolute()
+
+    audio_directory_paths = [expand_path(path)
+                             for path in args.dataset_audio_directory_paths]
+
+    named_dataset_json_data_paths = {
+        dataset_name: expand_path(json_data_path)
+        for dataset_name, json_data_path
+        in args.named_dataset_json_data_paths.items()
     }
 
-    assert (len(set(named_dataset_paths.keys()))
-            == len(named_dataset_paths.keys())), (
+    assert (len(set(named_dataset_json_data_paths.keys()))
+            == len(named_dataset_json_data_paths.keys())), (
                 "Use unique names for all datasets"
                 "otherwise the outputs will overwrite one another"
                 )
 
-    for dataset_name, dataset_path in named_dataset_paths.items():
-        assert dataset_path.is_dir()
+    if args.vqvae_command_line_parameters_path is not None:
+        VQVAE_COMMAND_LINE_PARAMETERS_PATH = pathlib.Path(
+            args.vqvae_command_line_parameters_path)
+        with open(VQVAE_COMMAND_LINE_PARAMETERS_PATH, 'r') as f:
+            vqvae_command_line_parameters = json.load(f)
+
+    vqvae = VQVAE.from_parameters_and_weights(
+        VQVAE_MODEL_PARAMETERS_PATH,
+        VQVAE_MODEL_WEIGHTS_PATH,
+        device=device)
+    vqvae.eval()
+
+    model = nn.DataParallel(vqvae)
+    model = model.to(device)
+
+    inference_vqvae = InferenceVQVAE(vqvae, device=device,
+                                     hop_length=HOP_LENGTH,
+                                     n_fft=N_FFT)
+
+    for dataset_name, json_data_path in named_dataset_json_data_paths.items():
+        assert json_data_path.is_file()
         if args.dataset == 'nsynth':
             valid_pitch_range = [24, 84]
 
             transform = vqvae.output_transform
 
             nsynth_dataset_with_samples_names = NSynth(
-                root=str(dataset_path),
+                audio_directory_paths=audio_directory_paths,
+                json_data_path=json_data_path,
                 valid_pitch_range=valid_pitch_range,
                 categorical_field_list=['instrument_family_str', 'pitch'],
-                squeeze_mono_channel=True)
+                squeeze_mono_channel=True
+            )
 
             # converts wavforms to spectrograms on-the-fly on GPU
             loader = WavToSpectrogramDataLoader(
@@ -152,6 +183,9 @@ if __name__ == '__main__':
 
             in_channel = 2
         elif args.dataset == 'imagenet':
+            raise (NotImplementedError,
+                   "Must harmonize with NSynth JSON file-based splits")
+
             def make_resize_transform(target_size: Union[int, Sequence[int]],
                                       normalize: bool):
                 transformations = [
@@ -166,11 +200,6 @@ if __name__ == '__main__':
 
             # retrieve size and normalization for the training process of the loaded model
             # TODO(theis:maybe): store those details within the model itself?
-            VQVAE_COMMAND_LINE_PARAMETERS_PATH = pathlib.Path(
-                args.command_line_parameters_path)
-            with open(VQVAE_COMMAND_LINE_PARAMETERS_PATH, 'r') as f:
-                vqvae_command_line_parameters = json.load(f)
-
             transform = make_resize_transform(
                 vqvae_command_line_parameters['size'],
                 vqvae_command_line_parameters['normalize_input_images'])
@@ -191,19 +220,6 @@ if __name__ == '__main__':
                 str(key) for key in class_to_index.keys()]
             label_encoders = {'class': classes_label_encoder}
             in_channel = 3
-
-        vqvae = VQVAE.from_parameters_and_weights(
-            VQVAE_MODEL_PARAMETERS_PATH,
-            VQVAE_MODEL_WEIGHTS_PATH,
-            device=device)
-
-        model = nn.DataParallel(vqvae)
-        model = model.to(device)
-        model.eval()
-
-        inference_vqvae = InferenceVQVAE(vqvae, device=device,
-                                         hop_length=HOP_LENGTH,
-                                         n_fft=N_FFT)
 
         # TODO(theis): compute appropriate size for the map
         map_size = 100 * 1024 * 1024 * 1024
@@ -243,7 +259,8 @@ if __name__ == '__main__':
                     audio_sample_path = os.path.join(
                         args.checking_samples_dir,
                         f'vqvae_codes_extraction_samples.wav')
-                    soundfile.write(audio_sample_path, make_audio(decoded_sample),
+                    soundfile.write(audio_sample_path,
+                                    make_audio(decoded_sample),
                                     samplerate=FS_HZ)
                 elif args.dataset == 'imagenet':
                     with torch.no_grad():
