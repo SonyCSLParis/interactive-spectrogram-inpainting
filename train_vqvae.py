@@ -483,7 +483,7 @@ if __name__ == '__main__':
             pass
         else:
             if (epoch_index == args.num_training_epochs - 1  # save last run
-                    or epoch_index-start_epoch % args.save_frequency == 0):
+                    or (epoch_index-start_epoch) % args.save_frequency == 0):
                 checkpoint_filename = (f'vqvae_{dataset_name}_'
                                        f'{str(epoch_index + 1).zfill(3)}.pt')
                 torch.save(
