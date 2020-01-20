@@ -43,7 +43,6 @@ def train(epoch: int, loader: DataLoader, model: nn.Module,
           optimizer: optim.Optimizer,
           scheduler: optim.lr_scheduler._LRScheduler,
           device: str,
-          inference_vqvae: InferenceVQVAE,
           run_id: str,
           latent_loss_weight: float = 0.25,
           enable_image_dumps: bool = False,
@@ -376,7 +375,7 @@ if __name__ == '__main__':
         normalizer_statistics = None
         if args.precomputed_normalization_statistics is not None:
             data_normalizer = DataNormalizer.load_statistics(
-                args.precomputed_normalization_statistics)
+                expand_path(args.precomputed_normalization_statistics))
             normalizer_statistics = data_normalizer.statistics
         elif args.input_normalization:
             dataloader_for_gansynth_normalization = loader
@@ -486,7 +485,8 @@ if __name__ == '__main__':
         os.makedirs(MAIN_DIR / f'samples/{run_ID}/', exist_ok=True)
 
     tensorboard_writer = None
-    if not (args.disable_tensorboard or args.disable_writes_to_disk):
+    if not (args.dry_run or args.disable_tensorboard
+            or args.disable_writes_to_disk):
         tensorboard_dir_path = MAIN_DIR / f'runs/{run_ID}/'
         os.makedirs(tensorboard_dir_path, exist_ok=True)
         tensorboard_writer = SummaryWriter(tensorboard_dir_path)
@@ -500,7 +500,6 @@ if __name__ == '__main__':
               tensorboard_writer=tensorboard_writer,
               tensorboard_audio_interval_epochs=3,
               tensorboard_num_audio_samples=5,
-              inference_vqvae=inference_vqvae,
               dry_run=args.dry_run)
 
         if args.dry_run or args.disable_writes_to_disk:
@@ -546,6 +545,8 @@ if __name__ == '__main__':
                     validation_loader)
                 samples = samples[:3]
                 reconstructions = reconstructions[:3]
+
+                # add audio files to Tensorboards
                 samples_audio = inference_vqvae.mag_and_IF_to_audio(
                     samples, use_mel_frequency=True)
                 reconstructions_audio = inference_vqvae.mag_and_IF_to_audio(
@@ -556,6 +557,8 @@ if __name__ == '__main__':
                 tensorboard_writer.add_audio('Reconstructions (end of epoch, validation data)',
                                              reconstructions_audio.flatten(),
                                              epoch_index)
+
+                # add spectrogram plots to Tensorboards
                 mel_specs_original, mel_IFs_original = (
                     np.swapaxes(samples.data.cpu().numpy(), 0, 1))
                 mel_specs_reconstructions, mel_IFs_reconstructions = (
