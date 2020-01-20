@@ -72,7 +72,7 @@ def train(epoch: int, loader: DataLoader, model: nn.Module,
 
         img = img.to(device)
 
-        out, latent_loss, perplexity_t, perplexity_b, *_ = model(img)
+        out, latent_loss, perplexity_t_mean, perplexity_b_mean, *_ = model(img)
         recon_loss = criterion(out, img)
         latent_loss = latent_loss.mean()
         loss = recon_loss + latent_loss_weight * latent_loss
@@ -91,13 +91,18 @@ def train(epoch: int, loader: DataLoader, model: nn.Module,
 
         lr = optimizer.param_groups[0]['lr']
 
+        # must take the .mean() again due to DataParallel,
+        # perplexity_t_mean is has length the number of GPUs
+        batch_perplexity_t_mean = perplexity_t_mean.mean().item()
+        batch_perplexity_b_mean = perplexity_b_mean.mean().item()
+
         batch_reconstruction_mse = recon_loss.item()
         batch_latent_loss = latent_loss.item()
         status_bar.set_description_str(
             (
                 f'epoch: {epoch + 1}; '
                 f'avg mse: {mse_sum / num_samples_seen_epoch:.4f}; mse: {mse_batch:.4f}; latent: {batch_latent_loss:.4f}; '
-                f'perpl_bottom: {perplexity_b.mean():.4f}; perpl_top: {perplexity_t.mean():.4f}'
+                f'perpl_bottom: {batch_perplexity_b_mean:.4f}; perpl_top: {batch_perplexity_t_mean:.4f}'
             )
         )
         if tensorboard_writer is not None:
@@ -109,10 +114,10 @@ def train(epoch: int, loader: DataLoader, model: nn.Module,
                                           batch_latent_loss,
                                           num_samples_seen_total)
             tensorboard_writer.add_scalar('training/perplexity_top',
-                                          perplexity_t.mean(),
+                                          batch_perplexity_t_mean,
                                           num_samples_seen_total)
             tensorboard_writer.add_scalar('training/perplexity_bottom',
-                                          perplexity_b.mean(),
+                                          batch_perplexity_b_mean,
                                           num_samples_seen_total)
 
         if enable_image_dumps and i % 100 == 0:
@@ -167,14 +172,14 @@ def evaluate(loader: DataLoader, model: nn.Module, device: str,
         for i, (img, _) in enumerate(loader):
             img = img.to(device)
 
-            out, latent_loss, perplexity_t, perplexity_b, *_ = model(img)
+            out, latent_loss, perplexity_t_mean, perplexity_b_mean, *_ = model(img)
             recon_loss = criterion(out, img)
             latent_loss_mean = latent_loss.mean()
             loss = recon_loss + latent_loss_weight * latent_loss_mean
 
             mse_total += recon_loss * img.shape[0]
-            perplexity_t_total += perplexity_t.sum()
-            perplexity_b_total += perplexity_b.sum()
+            perplexity_t_total += perplexity_t_mean.mean() * img.shape[0]
+            perplexity_b_total += perplexity_b_mean.mean() * img.shape[0]
             latent_loss_total += latent_loss.sum()
             if args.dry_run:
                 break
