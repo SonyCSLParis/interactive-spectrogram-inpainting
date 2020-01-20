@@ -305,7 +305,7 @@ if __name__ == '__main__':
     loader = DataLoader(
         torch.utils.data.Subset(dataset, range(num_training_samples)),
         batch_size=args.batch_size, shuffle=True,
-        num_workers=args.num_workers, drop_last=True,
+        num_workers=args.num_workers, drop_last=False,
     )
     class_conditioning_num_classes_per_modality = {
         modality: len(label_encoder.classes_)
