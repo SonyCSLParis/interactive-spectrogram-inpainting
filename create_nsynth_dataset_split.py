@@ -2,19 +2,24 @@ import argparse
 import pathlib
 import json
 import os
+from collections import OrderedDict
 
 from sklearn.model_selection import train_test_split
 
 from GANsynth_pytorch.pytorch_nsynth_lib.nsynth import (
     NSynth, WavToSpectrogramDataLoader)
 
+REPRODUCIBLE_RANDOM_SEED = 20200117
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--dataset_paths', type=str, nargs='+')
     parser.add_argument('--output_directory', type=str, required=True)
     parser.add_argument('--valid_pitch_range', type=int, nargs=2,
-                        default=None)
+                        default=(24, 84))
     parser.add_argument('--train_size', type=float, default=0.8)
+    parser.add_argument('--random_seed', type=int,
+                        default=REPRODUCIBLE_RANDOM_SEED)
     args = parser.parse_args()
 
     print(args)
@@ -37,13 +42,18 @@ if __name__ == '__main__':
         # filenames.extend(dataset.filenames)
         all_json_data.update(dataset.json_data)
 
+    # sort metadata by sample name
+    all_json_data = OrderedDict(sorted(all_json_data.items()))
+
     # create json_data split
     print('Create json_data split')
     json_data_splits_as_lists = train_test_split(
         list(all_json_data.items()),
-        train_size=args.train_size
+        train_size=args.train_size,
+        random_state=args.random_seed
     )
 
+    # convert lists back top dictionaries
     json_data_train_split, json_data_valid_split = [
         {key: value
          for key, value in split_as_list}
