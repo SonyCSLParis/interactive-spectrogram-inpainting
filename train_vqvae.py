@@ -479,7 +479,7 @@ if __name__ == '__main__':
               inference_vqvae=inference_vqvae,
               dry_run=args.dry_run)
 
-        if args.disable_writes_to_disk:
+        if args.dry_run or args.disable_writes_to_disk:
             pass
         else:
             if (epoch_index == args.num_training_epochs - 1  # save last run
