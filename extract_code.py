@@ -130,6 +130,8 @@ if __name__ == '__main__':
         if args.dataset == 'nsynth':
             valid_pitch_range = [24, 84]
 
+            transform = vqvae.output_transform
+
             nsynth_dataset_with_samples_names = NSynth(
                 root=str(dataset_path),
                 valid_pitch_range=valid_pitch_range,
@@ -142,7 +144,9 @@ if __name__ == '__main__':
                 batch_size=args.batch_size,
                 num_workers=args.num_workers, shuffle=False,
                 pin_memory=True,
-                device=device, n_fft=N_FFT, hop_length=HOP_LENGTH)
+                device=device, n_fft=N_FFT, hop_length=HOP_LENGTH,
+                transform=transform,
+            )
 
             label_encoders = nsynth_dataset_with_samples_names.label_encoders
 

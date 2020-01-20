@@ -8,6 +8,9 @@ from torch import nn
 from torch.nn import functional as F
 
 import GANsynth_pytorch
+from GANsynth_pytorch.spectrograms_helper import SPEC_THRESHOLD
+from GANsynth_pytorch.pytorch_nsynth_lib.nsynth import (
+    make_masked_phase_transform)
 from GANsynth_pytorch.normalizer import (DataNormalizer,
                                          DataNormalizerStatistics)
 
@@ -305,6 +308,8 @@ class VQVAE(nn.Module):
         num_embeddings: Union[int, Iterable[int]] = 512,
         decay: float = 0.99,
         groups: int = 1,
+        output_spectrogram_threshold: Optional[float] = None,
+        output_spectrogram_thresholded_value: Optional[float] = SPEC_THRESHOLD,
         resolution_factors: Mapping[str, int] = {
             'bottom': 4,
             'top': 2,
@@ -329,6 +334,9 @@ class VQVAE(nn.Module):
         self.embeddings_initial_variance = embeddings_initial_variance
         self.decoder_output_activation = decoder_output_activation
         self.corruption_weights = corruption_weights
+        self.output_spectrogram_threshold = output_spectrogram_threshold
+        self.output_spectrogram_thresholded_value = (
+            output_spectrogram_thresholded_value)
 
         if isinstance(normalizer_statistics, DataNormalizerStatistics):
             self.normalizer_statistics = normalizer_statistics.__dict__
@@ -401,24 +409,27 @@ class VQVAE(nn.Module):
 
         if self.use_gansynth_normalization:
             data_normalizer_statistics = DataNormalizerStatistics(
-                self.normalizer_statistics)
+                **self.normalizer_statistics)
             self.data_normalizer = DataNormalizer(data_normalizer_statistics)
         else:
             self.data_normalizer = None
 
-    def forward(self, input):
-        if self.use_gansynth_normalization:
-            input = self.data_normalizer.normalize(input)
+        self.output_transform = None
+        if self.output_spectrogram_threshold is not None:
+            self.output_transform = make_masked_phase_transform(
+                self.output_spectrogram_threshold,
+                self.output_spectrogram_thresholded_value)
 
+    def forward(self, input):
         quant_t, quant_b, diff, id_t, id_b, perplexity_t, perplexity_b = self.encode(
             input)
         dec = self.decode(quant_t, quant_b)
-
-        if self.use_gansynth_normalization:
-            dec = self.data_normalizer.denormalize(dec)
         return dec, diff, perplexity_t, perplexity_b, id_t, id_b
 
     def encode(self, input):
+        if self.use_gansynth_normalization:
+            input = self.data_normalizer.normalize(input)
+
         enc_b = self.enc_b(input)
         enc_t = self.enc_t(enc_b)
 
@@ -443,6 +454,7 @@ class VQVAE(nn.Module):
         quant = torch.cat([upsample_top_to_bottom, quant_b], 1)
         dec = self.dec(quant)
 
+        dec = self.post_process(dec)
         return dec
 
     def decode_code(self, code_t, code_b):
@@ -452,7 +464,13 @@ class VQVAE(nn.Module):
         quant_b = quant_b.permute(0, 3, 1, 2)
 
         dec = self.decode(quant_t, quant_b)
+        return dec
 
+    def post_process(self, dec: torch.Tensor) -> torch.Tensor:
+        if self.use_gansynth_normalization:
+            dec = self.data_normalizer.denormalize(dec)
+        if self.output_transform is not None:
+            dec = self.output_transform(dec)
         return dec
 
     @classmethod

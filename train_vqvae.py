@@ -21,9 +21,10 @@ from scheduler import CycleScheduler
 
 from nsynth_dataset import NSynthH5Dataset
 from GANsynth_pytorch.pytorch_nsynth_lib.nsynth import (
-    NSynth, WavToSpectrogramDataLoader)
+    NSynth, WavToSpectrogramDataLoader, make_masked_phase_transform)
 from GANsynth_pytorch.normalizer import DataNormalizer
 import GANsynth_pytorch.utils.plots as gansynthplots
+from GANsynth_pytorch.spectrograms_helper import SPEC_THRESHOLD
 
 import matplotlib as mpl
 # use matplotlib without an X server
@@ -221,6 +222,10 @@ if __name__ == '__main__':
     parser.add_argument('--groups', type=int, default=1)
     parser.add_argument('--sched', type=str)
     parser.add_argument('--batch_size', type=int, default=64)
+    parser.add_argument('--output_spectrogram_threshold', type=float,
+                        default=None)
+    parser.add_argument('--output_spectrogram_thresholded_value', type=float,
+                        default=SPEC_THRESHOLD)
     parser.add_argument('--num_workers', type=int, default=4,
                         help='Number of workers for the Dataloaders')
     parser.add_argument('--dataset_audio_directory_paths', type=str,
@@ -277,6 +282,7 @@ if __name__ == '__main__':
     dataset_name = args.dataset
     print("Loading dataset: ", dataset_name)
     vqvae_decoder_activation = None
+    output_transform = None
     if dataset_name == 'imagenet':
         def make_resize_transform(target_size: Union[int, Sequence[int]],
                                   normalize: bool):
@@ -318,12 +324,18 @@ if __name__ == '__main__':
                                        device=device,
                                        n_fft=N_FFT, hop_length=HOP_LENGTH)
 
+            if args.output_spectrogram_threshold is not None:
+                output_transform = make_masked_phase_transform(
+                    args.output_spectrogram_threshold,
+                    args.output_spectrogram_thresholded_value)
+
             nsynth_dataset = NSynth(
                 audio_directory_paths=audio_directory_paths,
                 json_data_path=train_dataset_json_data_path,
                 valid_pitch_range=valid_pitch_range,
                 categorical_field_list=[],
-                squeeze_mono_channel=True)
+                squeeze_mono_channel=True
+            )
 
             if args.validation_dataset_json_data_path:
                 nsynth_validation_dataset = NSynth(
@@ -331,7 +343,8 @@ if __name__ == '__main__':
                     json_data_path=validation_dataset_json_data_path,
                     valid_pitch_range=valid_pitch_range,
                     categorical_field_list=[],
-                    squeeze_mono_channel=True)
+                    squeeze_mono_channel=True
+                )
 
         elif args.dataset_type == 'hdf5':
             nsynth_dataset = NSynthH5Dataset(
@@ -347,12 +360,14 @@ if __name__ == '__main__':
         loader = dataloader_class(
             nsynth_dataset, batch_size=args.batch_size,
             num_workers=args.num_workers, shuffle=True,
-            pin_memory=True)
+            pin_memory=True,
+            transform=output_transform)
 
         validation_loader = dataloader_class(nsynth_validation_dataset,
                                              batch_size=args.batch_size,
                                              num_workers=args.num_workers,
-                                             shuffle=True, pin_memory=True
+                                             shuffle=True, pin_memory=True,
+                                             transform=output_transform
                                              )
 
         in_channel = 2
@@ -406,7 +421,11 @@ if __name__ == '__main__':
                         'embeddings_initial_variance':
                             args.embeddings_initial_variance,
                         # 'resume_training_from': args.resume_training_from
-                        'resolution_factors': args.resolution_factors
+                        'resolution_factors': args.resolution_factors,
+                        'output_spectrogram_threshold': (
+                            args.output_spectrogram_threshold),
+                        'output_spectrogram_thresholded_value': (
+                            args.output_spectrogram_thresholded_value)
                         }
 
     def print_resolution_summary(loader, resolution_factors):
