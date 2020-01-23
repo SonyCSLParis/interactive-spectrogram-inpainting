@@ -147,13 +147,13 @@ def run_model(args, epoch, loader, model, optimizer, scheduler, device,
                     class_conditioning=class_conditioning_tensors)
             )
 
-            logits_out, _ = model(
+            logits_sequence_out, _ = model(
                 target_sequence,
                 condition=source_sequence,
                 class_conditioning=class_conditioning_tensors)
 
-        time_frequency_logits_out = model.module.to_time_frequency_logits(
-            logits_out)
+        time_frequency_logits_out = model.module.to_time_frequency_map(
+            logits_sequence_out)
 
         loss = criterion(time_frequency_logits_out, target)
 
