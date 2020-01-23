@@ -447,7 +447,7 @@ class VQNSynthTransformer(nn.Module):
             output_shape[dim_index] = size
 
         # reshape output to time-frequency format
-        time_frequency_logits = output_sequence.reshape(*output_shape)
+        time_frequency_logits = logits.reshape(*output_shape)
 
         if self.predict_frequencies_first:
             time_frequency_logits = time_frequency_logits.transpose(
