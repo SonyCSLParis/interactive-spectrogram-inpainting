@@ -72,6 +72,8 @@ def sample_model(model: PixelSNAIL, device: Union[torch.device, str],
     constraint_height = 0
     constraint_width = 0
     if constraint is not None:
+        raise NotImplementedError
+
         if list(constraint.shape) > codemap_size:
             raise ValueError("Incorrect size of constraint, constraint "
                              "should be smaller than the target codemap size")
@@ -90,12 +92,11 @@ def sample_model(model: PixelSNAIL, device: Union[torch.device, str],
                        .squeeze(channel_dim)
                        )
 
-    cache = {}
-
     sequence_duration = codemap_size[0] * codemap_size[1]
     codemap_as_sequence = torch.zeros(batch_size, sequence_duration).long()
     source_sequence, target_sequence = model.to_sequences(
-        codemap, condition, class_conditioning=class_conditioning_tensors
+        codemap, condition,
+        class_conditioning=class_conditioning_tensors
     )
 
     if model.conditional_model:
@@ -109,15 +110,12 @@ def sample_model(model: PixelSNAIL, device: Union[torch.device, str],
 
     for i in tqdm(range(sequence_duration)):
         logits_sequence_out, _ = parallel_model(
-            input_sequence, condition_sequence,
-            cache=cache,
-            class_conditioning=class_conditioning)
+            input_sequence, condition_sequence)
 
         next_step_probabilities = torch.softmax(
             logits_sequence_out[:, i, :] / temperature,
             1)
         sample = torch.multinomial(next_step_probabilities, 1).squeeze(-1)
-
         codemap_as_sequence[:, i] = sample.long()
 
         embedded_sample = model.embed_data(sample, kind)
@@ -331,7 +329,7 @@ if __name__ == '__main__':
          args.instrument_family_conditioning_bottom,
          args.pitch_conditioning_top, args.pitch_conditioning_bottom,
          ],
-        ['instrument_family_str', 'instrument_family_str', 'pitch', 'pitch',],
+        ['instrument_family_str', 'instrument_family_str', 'pitch', 'pitch'],
         ['top', 'bottom', 'top', 'bottom']
     ):
         maybe_add_conditioning(value, modality, location)
@@ -418,7 +416,7 @@ if __name__ == '__main__':
     with open(OUTPUT_DIRECTORY / f'{run_ID}-command_line_parameters.json', 'w') as f:
         json.dump(args.__dict__, f, indent=4)
 
-    codes_figure.savefig(OUTPUT_DIRECTORY / 'codemaps.png')
+    codes_figure.savefig(OUTPUT_DIRECTORY / f'{run_ID}-codemaps.png')
 
     if args.dataset == 'nsynth':
         audio_sample_path = OUTPUT_DIRECTORY / f'{run_ID}.wav'

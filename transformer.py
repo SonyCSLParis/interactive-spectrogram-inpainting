@@ -126,16 +126,20 @@ class VQNSynthTransformer(nn.Module):
                 self.condition_shape)
         else:
             self.source_frequencies, self.source_duration = self.shape
+
         if self.use_relative_transformer:
             self.source_num_channels, self.source_num_events = (
                 self.source_frequencies, self.source_duration)
+
         self.source_transformer_sequence_length = (
             self.source_frequencies * self.source_duration)
 
         if self.conditional_model:
             self.target_frequencies, self.target_duration = self.shape
+
             self.target_transformer_sequence_length = (
                 self.target_frequencies * self.target_duration)
+
             if self.use_relative_transformer:
                 self.target_events_per_source_patch = (
                     (self.target_duration // self.source_duration)
@@ -189,7 +193,7 @@ class VQNSynthTransformer(nn.Module):
                                 self.target_duration,  # time-dimension
                                 self.positional_embeddings_dim//2))
                 )
-            if self.use_relative_transformer:
+            else:
                 self.target_positional_embeddings_time = None
 
                 # decoder-level, patch-based relative position embeddings
@@ -251,6 +255,9 @@ class VQNSynthTransformer(nn.Module):
                 )
 
             # initialize start positions for class conditioning in start symbol
+            # TODO(theis): this leads to the first position being
+            # the first modality_embedding_dim! Should start at -modality_embedding_dim
+            # but for now this would change the already saved models' behaviour
             if self.class_conditioning_prepend_to_dummy_input:
                 # insert class conditioning at beginning of the start symbol
                 current_position = 0
@@ -268,7 +275,7 @@ class VQNSynthTransformer(nn.Module):
                 )
 
         self.source_start_symbol_dim = self.d_model
-        # TODO reduce dimensionality of start symbol
+        # TODO reduce dimensionality of start symbol and use a linear layer to expand it
         self.source_start_symbol = nn.Parameter(
             torch.randn((1, 1, self.source_start_symbol_dim))
         )
@@ -591,6 +598,9 @@ class VQNSynthTransformer(nn.Module):
         else:
             (frequency_dim, time_dim) = (1, 2)
 
+        if not self.predict_low_frequencies_first:
+            raise NotImplementedError
+
         sequence_dimensions = sequence.ndim
         if sequence_dimensions == 2:
             sequence = sequence.unsqueeze(-1)
@@ -637,7 +647,7 @@ class VQNSynthTransformer(nn.Module):
                 condition: Optional[torch.Tensor] = None,
                 class_conditioning: Mapping[str, torch.Tensor] = {},
                 cache: Optional[Mapping[str, torch.Tensor]] = None):
-        (batch_dim, sequence_dim) = (1, 0)
+        (batch_dim, sequence_dim) = (0, 1)
 
         if self.conditional_model:
             target_sequence = input
@@ -650,6 +660,7 @@ class VQNSynthTransformer(nn.Module):
         time_major_source_sequence = source_sequence.transpose(0, 1)
         if self.conditional_model:
             time_major_target_sequence = target_sequence.transpose(0, 1)
+        (batch_dim, sequence_dim) = (1, 0)
 
         if self.conditional_model:
             output_sequence = self.transformer(
@@ -660,7 +671,6 @@ class VQNSynthTransformer(nn.Module):
                 src_mask=None,
                 tgt_mask=self.causal_mask)
         else:
-
             output_sequence = self.transformer(time_major_source_sequence,
                                                mask=self.causal_mask)
         if self.use_relative_transformer:
