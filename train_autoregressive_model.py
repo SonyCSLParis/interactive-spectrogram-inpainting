@@ -128,16 +128,34 @@ def run_model(args, epoch, loader, model, optimizer, scheduler, device,
 
         if args.hier == 'top':
             target = top
-            out, _ = model(top,
-                           class_conditioning=class_conditioning_tensors)
+            source_sequence, _ = (
+                model.module.to_sequences(
+                    top, condition=None,
+                    class_conditioning=class_conditioning_tensors
+                    ))
+
+            logits_sequence_out, _ = model(
+                source_sequence, condition=None,
+                class_conditioning=class_conditioning_tensors)
 
         elif args.hier == 'bottom':
             bottom = bottom.to(device)
             target = bottom
-            out, _ = model(bottom, condition=top,
-                           class_conditioning=class_conditioning_tensors)
+            source_sequence, target_sequence = (
+                model.module.to_sequences(
+                    bottom, condition=top,
+                    class_conditioning=class_conditioning_tensors)
+            )
 
-        loss = criterion(out, target)
+            logits_out, _ = model(
+                target_sequence,
+                condition=source_sequence,
+                class_conditioning=class_conditioning_tensors)
+
+        time_frequency_logits_out = model.module.to_time_frequency_logits(
+            logits_out)
+
+        loss = criterion(time_frequency_logits_out, target)
 
         if is_training:
             loss.backward()
@@ -146,7 +164,7 @@ def run_model(args, epoch, loader, model, optimizer, scheduler, device,
                 scheduler.step()
             optimizer.step()
 
-        _, pred = out.max(1)
+        _, pred = time_frequency_logits_out.max(1)
         correct = (pred == target).float()
         accuracy = correct.sum() / correct.numel()
 
@@ -249,9 +267,12 @@ if __name__ == '__main__':
                         type=int, default=16)
     parser.add_argument('--class_conditioning_prepend_to_dummy_input',
                         action='store_true')
+    parser.add_argument('--use_relative_transformer', action='store_true')
     parser.add_argument('--conditional_model_nhead', type=int, default=16)
     parser.add_argument('--conditional_model_num_encoder_layers', type=int,
                         default=12)
+    parser.add_argument('--conditional_model_num_decoder_layers', type=int,
+                        default=6)
     parser.add_argument('--unconditional_model_nhead', type=int, default=8)
     parser.add_argument('--unconditional_model_num_encoder_layers', type=int,
                         default=6)
@@ -346,6 +367,7 @@ if __name__ == '__main__':
             res_channel=args.n_res_channel,
             dropout=args.dropout,
             n_out_res_block=args.n_out_res_block,
+            use_relative_transformer=args.use_relative_transformer,
             predict_frequencies_first=args.predict_frequencies_first,
             conditional_model=False,
             class_conditioning_num_classes_per_modality=class_conditioning_num_classes_per_modality,
@@ -367,6 +389,7 @@ if __name__ == '__main__':
             dropout=args.dropout,
             n_cond_res_block=args.n_cond_res_block,
             cond_res_channel=args.n_res_channel,
+            use_relative_transformer=args.use_relative_transformer,
             predict_frequencies_first=args.predict_frequencies_first,
             class_conditioning_num_classes_per_modality=class_conditioning_num_classes_per_modality,
             class_conditioning_embedding_dim_per_modality=class_conditioning_embedding_dim_per_modality,
@@ -374,6 +397,7 @@ if __name__ == '__main__':
             condition_shape=shape_top,
             conditional_model_nhead=args.conditional_model_nhead,
             conditional_model_num_encoder_layers=args.conditional_model_num_encoder_layers,
+            conditional_model_num_decoder_layers=args.conditional_model_num_decoder_layers,
             class_conditioning_prepend_to_dummy_input=args.class_conditioning_prepend_to_dummy_input
         )
 

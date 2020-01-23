@@ -8,6 +8,8 @@ import uuid
 import soundfile
 from tqdm import tqdm
 import numpy as np
+import matplotlib as mpl
+import matplotlib.pyplot as plt
 
 import torch
 import torchaudio
@@ -23,6 +25,10 @@ from GANsynth_pytorch.pytorch_nsynth_lib.nsynth import (
 
 if torch.cuda.is_available():
     torch.set_default_tensor_type(torch.cuda.FloatTensor)
+
+# use matplotlib without an X server
+# on desktop, this prevents matplotlib windows from popping around
+mpl.use('Agg')
 
 
 @torch.no_grad()
@@ -53,7 +59,7 @@ def sample_model(model: PixelSNAIL, device: Union[torch.device, str],
     codemap = (torch.zeros(batch_size, *codemap_size, dtype=torch.int64)
                .to(device)
                )
-    class_conditioning = {
+    class_conditioning_tensors = {
         conditioning_modality: (
             conditioning_tensor.long()
             .repeat(batch_size, 1)
@@ -86,32 +92,111 @@ def sample_model(model: PixelSNAIL, device: Union[torch.device, str],
 
     cache = {}
 
-    if model.predict_frequencies_first:
-        for j in tqdm(range(codemap_size[1]), position=0):
-            start_row = (0 if j >= constraint_width
-                         else constraint_height)
-            for i in tqdm(range(start_row, codemap_size[0]), position=1):
-                out, cache = parallel_model(
-                    codemap, condition=condition,
-                    cache=cache,
-                    class_conditioning=class_conditioning)
-                prob = torch.softmax(out[:, :, i, j] / temperature, 1)
-                sample = torch.multinomial(prob, 1).squeeze(-1)
-                codemap[:, i, j] = sample
+    sequence_duration = codemap_size[0] * codemap_size[1]
+    codemap_as_sequence = torch.zeros(batch_size, sequence_duration).long()
+    source_sequence, target_sequence = model.to_sequences(
+        codemap, condition, class_conditioning=class_conditioning_tensors
+    )
+
+    if model.conditional_model:
+        kind = 'target'
+        input_sequence = target_sequence
+        condition_sequence = source_sequence
     else:
-        for i in tqdm(range(codemap_size[0]), position=0):
-            start_column = (0 if i >= constraint_height
-                            else constraint_width)
-            for j in tqdm(range(start_column, codemap_size[1]), position=1):
-                out, cache = parallel_model(
-                    codemap, condition=condition,
-                    cache=cache,
-                    class_conditioning=class_conditioning)
-                prob = torch.softmax(out[:, :, i, j] / temperature, 1)
-                sample = torch.multinomial(prob, 1).squeeze(-1)
-                codemap[:, i, j] = sample
+        kind = 'source'
+        input_sequence = source_sequence
+        condition_sequence = None
+
+    for i in tqdm(range(sequence_duration)):
+        logits_sequence_out, _ = parallel_model(
+            input_sequence, condition_sequence,
+            cache=cache,
+            class_conditioning=class_conditioning)
+
+        next_step_probabilities = torch.softmax(
+            logits_sequence_out[:, :, i] / temperature,
+            1)
+        sample = torch.multinomial(next_step_probabilities, 1).squeeze(-1)
+
+        codemap_as_sequence[:, i] = sample.long()
+
+        embedded_sample = model.embed_data(sample, kind)
+        if i+1 < sequence_duration:
+            # translate to account for the added start_symbol!
+            input_sequence[:, i+1, :-model.positional_embeddings_dim] = (
+                embedded_sample)
+
+    codemap = model.to_time_frequency_map(codemap_as_sequence).long()
+
+    # if model.predict_frequencies_first:
+    #     for j in tqdm(range(codemap_size[1]), position=0):
+    #         start_row = (0 if j >= constraint_width
+    #                      else constraint_height)
+    #         for i in tqdm(range(start_row, codemap_size[0]), position=1):
+    #             out, cache = parallel_model(
+    #                 codemap, condition=condition,
+    #                 cache=cache,
+    #                 class_conditioning=class_conditioning)
+    #             prob = torch.softmax(out[:, :, i, j] / temperature, 1)
+    #             sample = torch.multinomial(prob, 1).squeeze(-1)
+    #             codemap[:, i, j] = sample
+    # else:
+    #     for i in tqdm(range(codemap_size[0]), position=0):
+    #         start_column = (0 if i >= constraint_height
+    #                         else constraint_width)
+    #         for j in tqdm(range(start_column, codemap_size[1]), position=1):
+    #             out, cache = parallel_model(
+    #                 codemap, condition=condition,
+    #                 cache=cache,
+    #                 class_conditioning=class_conditioning)
+    #             prob = torch.softmax(out[:, :, i, j] / temperature, 1)
+    #             sample = torch.multinomial(prob, 1).squeeze(-1)
+    #             codemap[:, i, j] = sample
 
     return codemap
+
+
+def plot_codes(top_codes: torch.LongTensor,
+               bottom_codes: torch.LongTensor,
+               codes_dictionary_dim_top: int,
+               codes_dictionary_dim_bottom: int,
+               cmap='viridis', plots_per_row: int = 12) -> None:
+    assert (len(top_codes)
+            == len(bottom_codes))
+
+    num_maps = len(top_codes)
+    num_groups = 2
+    plots_per_row = min(num_maps, plots_per_row)
+    num_rows_per_codemaps_group = int(np.ceil(num_maps / plots_per_row))
+    num_rows = num_groups * num_rows_per_codemaps_group
+
+    figure, subplot_axs = plt.subplots(num_rows, plots_per_row,
+                                       figsize=(10 * plots_per_row/12,
+                                                2*num_rows))
+    for ax in subplot_axs.ravel().tolist():
+        ax.set_axis_off()
+
+    def get_ax(codemap_group_index: int, codemap_index: int):
+        start_row = codemap_group_index * num_rows_per_codemaps_group
+        row = start_row + codemap_index // plots_per_row
+        ax = subplot_axs[row][codemap_index % plots_per_row]
+        return ax
+
+    for group_index, (maps_group, codes_dictionary_dim) in enumerate(
+            zip([top_codes, bottom_codes],
+                [codes_dictionary_dim_top,
+                 codes_dictionary_dim_bottom])):
+        for map_index, codemap in enumerate(maps_group):
+            ax = get_ax(group_index, map_index)
+            im = ax.matshow(codemap.cpu().numpy(), vmin=0,
+                            vmax=codes_dictionary_dim-1,
+                            cmap=cmap)
+
+    figure.tight_layout()
+    # add colorbar for codemaps
+    figure.colorbar(im,
+                    ax=(subplot_axs.ravel().tolist()))
+    return figure, subplot_axs
 
 
 if __name__ == '__main__':
@@ -162,6 +247,11 @@ if __name__ == '__main__':
 
     args = parser.parse_args()
 
+    def expand_path(path: str) -> pathlib.Path:
+        return pathlib.Path(path).expanduser().absolute()
+
+    OUTPUT_DIRECTORY = expand_path(args.output_directory)
+
     run_ID = (datetime.now().strftime('%Y%m%d-%H%M%S-')
               + str(uuid.uuid4())[:6])
     print("Sample ID: ", run_ID)
@@ -184,22 +274,19 @@ if __name__ == '__main__':
         raise ValueError(
             f"Unexpected value {args.model_type_bottom} for option model_type_bottom")
 
-    def absolute_path(path: str) -> str:
-        return str(pathlib.Path(path).expanduser().absolute())
-
     model_vqvae = VQVAE.from_parameters_and_weights(
-        absolute_path(args.vqvae_parameters_path),
-        absolute_path(args.vqvae_weights_path),
+        expand_path(args.vqvae_parameters_path),
+        expand_path(args.vqvae_weights_path),
         device=device
         ).to(device).eval()
     model_top = ModelTop.from_parameters_and_weights(
-        absolute_path(args.prediction_top_parameters_path),
-        absolute_path(args.prediction_top_weights_path),
+        expand_path(args.prediction_top_parameters_path),
+        expand_path(args.prediction_top_weights_path),
         device=device
         ).to(device).eval()
     model_bottom = ModelBottom.from_parameters_and_weights(
-        absolute_path(args.prediction_bottom_parameters_path),
-        absolute_path(args.prediction_bottom_weights_path),
+        expand_path(args.prediction_bottom_parameters_path),
+        expand_path(args.prediction_bottom_weights_path),
         device=device
         ).to(device).eval()
 
@@ -214,9 +301,9 @@ if __name__ == '__main__':
     classes_for_conditioning.update(additional_modalities)
 
     if args.database_path_for_label_encoders is not None:
-        DATABASE_PATH = pathlib.Path(args.database_path_for_label_encoders)
+        DATABASE_PATH = expand_path(args.database_path_for_label_encoders)
         dataset = LMDBDataset(
-            DATABASE_PATH.expanduser().absolute(),
+            DATABASE_PATH,
             classes_for_conditioning=list(classes_for_conditioning)
         )
         label_encoders_per_conditioning = dataset.label_encoders
@@ -285,6 +372,8 @@ if __name__ == '__main__':
                 args.temperature,
                 class_conditioning=class_conditioning_top)
             top_code = top_code_sample
+
+        # sample bottom code contitioned on the top code
         bottom_sample = sample_model(
             model_bottom, device, args.batch_size, model_bottom.shape,
             args.temperature, condition=top_code,
@@ -293,14 +382,19 @@ if __name__ == '__main__':
 
         decoded_sample = model_vqvae.decode_code(top_code, bottom_sample)
 
+    codes_figure, _ = plot_codes(top_code, bottom_sample,
+                                 model_top.n_class,
+                                 model_bottom.n_class)
+
     inference_vqvae = InferenceVQVAE(model_vqvae, device,
                                      hop_length=args.hop_length,
                                      n_fft=args.n_fft)
 
     condition_top_audio = None
     if args.condition_top_audio_path is not None:
+        CONDITION_TOP_AUDIO_PATH = expand_path(args.condition_top_audio_path)
         import torchvision.transforms as transforms
-        sample_audio, fs_hz = torchaudio.load_wav(args.condition_top_audio_path,
+        sample_audio, fs_hz = torchaudio.load_wav(CONDITION_TOP_AUDIO_PATH,
                                                   channels_first=True)
         toFloat = transforms.Lambda(lambda x: (x / np.iinfo(np.int16).max))
         sample_audio = toFloat(sample_audio)
@@ -320,12 +414,14 @@ if __name__ == '__main__':
                                                      audio_mono_concatenated])
         return audio_mono_concatenated
 
-    os.makedirs(args.output_directory, exist_ok=True)
-    with open(os.path.join(args.output_directory, f'{run_ID}-command_line_parameters.json'), 'w') as f:
+    os.makedirs(OUTPUT_DIRECTORY, exist_ok=True)
+    with open(OUTPUT_DIRECTORY / f'{run_ID}-command_line_parameters.json', 'w') as f:
         json.dump(args.__dict__, f, indent=4)
 
+    codes_figure.savefig(OUTPUT_DIRECTORY / 'codemaps.png')
+
     if args.dataset == 'nsynth':
-        audio_sample_path = os.path.join(args.output_directory, f'{run_ID}.wav')
+        audio_sample_path = OUTPUT_DIRECTORY / f'{run_ID}.wav'
         soundfile.write(audio_sample_path,
                         make_audio(decoded_sample, condition_top_audio),
                         samplerate=args.sample_rate_hz)
