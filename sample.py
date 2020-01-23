@@ -114,7 +114,7 @@ def sample_model(model: PixelSNAIL, device: Union[torch.device, str],
             class_conditioning=class_conditioning)
 
         next_step_probabilities = torch.softmax(
-            logits_sequence_out[:, :, i] / temperature,
+            logits_sequence_out[:, i, :] / temperature,
             1)
         sample = torch.multinomial(next_step_probabilities, 1).squeeze(-1)
 
