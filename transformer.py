@@ -437,6 +437,12 @@ class VQNSynthTransformer(nn.Module):
 
         # slice along the time-axis
         batch_dim, frequency_dim, time_dim, embedding_dim = (0, 2, 1, 3)
+
+        was_reshaped = False
+        if input.ndim == 3:
+            input = input.unsqueeze(-1)
+            was_reshaped = True
+
         batch_size, _, _, embedding_size = input.shape
 
         time_slices_size = self.target_duration // self.source_num_events
@@ -459,6 +465,9 @@ class VQNSynthTransformer(nn.Module):
         input = input.reshape(
             batch_size, self.target_duration, self.target_frequencies,
             embedding_size)
+
+        if was_reshaped:
+            input = input.squeeze(-1)
         return input
 
     def inverse_zig_zag_reshaping_frequencies_first(self,
@@ -513,16 +522,19 @@ class VQNSynthTransformer(nn.Module):
         batch_dim, frequency_dim, time_dim, embedding_dim = (0, 1, 2, 3)
         batch_size, frequencies, duration = input.shape
 
-        input_as_sequence = self.flatten_map(input)
+        input_as_sequence = self.flatten_map(input, kind=kind)
 
-        embedded_sequence = self.embed_data(input, kind)
+        (batch_dim, sequence_dim, embedding_dim) = (0, 1, 2)
+
+        embedded_sequence = self.embed_data(input_as_sequence, kind=kind)
 
         embedded_sequence_with_positions = self.add_positions_to_sequence(
             embedded_sequence, kind=kind, embedding_dim=embedding_dim
         )
 
         prepared_sequence = self.maybe_add_start_symbol(
-            embedded_sequence_with_positions,
+            embedded_sequence_with_positions, kind=kind,
+            class_conditioning=class_conditioning, sequence_dim=1
         )
 
         return prepared_sequence, (
@@ -531,24 +543,30 @@ class VQNSynthTransformer(nn.Module):
     def add_positions_to_sequence(self, sequence: torch.Tensor, kind: str,
                                   embedding_dim: int):
         # add positional embeddings
+        batch_size = sequence.shape[0]
         # combine time and frequency embeddings
         if kind == 'source':
+            frequencies = self.source_frequencies
+            duration = self.source_duration
             positional_embeddings = self.combined_positional_embeddings_source
             transformer_sequence_length = (
                 self.source_transformer_sequence_length)
         elif kind == 'target':
+            frequencies = self.target_frequencies
+            duration = self.target_duration
             positional_embeddings = self.combined_positional_embeddings_target
             transformer_sequence_length = (
                 self.target_transformer_sequence_length)
         else:
             raise ValueError(f"Unexpected value {kind} for kind option")
 
-        # repeat positionalembeddings over whole batch
+        # repeat positional embeddings over whole batch
         positional_embeddings = (
             positional_embeddings
             .reshape(1, frequencies, duration, -1)
             .repeat(batch_size, 1, 1, 1))
-        positions_as_sequence = self.flatten_map(positional_embeddings)
+        positions_as_sequence = self.flatten_map(positional_embeddings,
+                                                 kind=kind)
 
         sequence_with_positions = torch.cat(
             [sequence, positions_as_sequence],
@@ -565,6 +583,7 @@ class VQNSynthTransformer(nn.Module):
             return sequence_with_positions
         # removing the unnecessary else to remove one level of indentation
 
+        batch_size = sequence_with_positions.shape[0]
         # combine time and frequency embeddings
         if kind == 'source':
             start_symbol = self.source_start_symbol
@@ -621,11 +640,13 @@ class VQNSynthTransformer(nn.Module):
 
         flattened_codemap = (
             codemap.reshape(batch_size,
-                                         frequencies * duration,
+                            frequencies * duration,
                             -1)
             )
+        if codemap.ndim == 3:
+            flattened_codemap = flattened_codemap.squeeze(-1)
         dimensions = (batch_dim, sequence_dim, embedding_dim) = (0, 1, 2)
-        return flattened_codemap, dimensions
+        return flattened_codemap
 
     def to_sequences(
             self, input: torch.Tensor,
@@ -657,7 +678,8 @@ class VQNSynthTransformer(nn.Module):
 
         return source_sequence, target_sequence
 
-    def to_time_frequency_map(self, sequence: torch.Tensor, kind: str) -> torch.Tensor:
+    def to_time_frequency_map(self, sequence: torch.Tensor, kind: str,
+                              permute_output_as_logits: bool = False) -> torch.Tensor:
         if self.predict_frequencies_first:
             (frequency_dim, time_dim) = (2, 1)
         else:
@@ -710,9 +732,9 @@ class VQNSynthTransformer(nn.Module):
                 time_dim, frequency_dim)
             (frequency_dim, time_dim) = (1, 2)
 
-        # if is_logits:
-        #     # permute dimensions to follow PyTorch logits convention
-        #     time_frequency_map = (time_frequency_map.permute(0, 3, 1, 2))
+        if is_logits and permute_output_as_logits:
+            # permute dimensions to follow PyTorch logits convention
+            time_frequency_map = (time_frequency_map.permute(0, 3, 1, 2))
         if not is_logits:
             time_frequency_map = time_frequency_map.squeeze(-1)
         return time_frequency_map

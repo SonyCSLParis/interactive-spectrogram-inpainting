@@ -127,6 +127,7 @@ def run_model(args, epoch, loader, model, optimizer, scheduler, device,
         top = top.to(device)
 
         if args.hier == 'top':
+            kind = 'source'
             target = top
             source_sequence, _ = (
                 model.module.to_sequences(
@@ -139,6 +140,7 @@ def run_model(args, epoch, loader, model, optimizer, scheduler, device,
                 class_conditioning=class_conditioning_tensors)
 
         elif args.hier == 'bottom':
+            kind = 'target'
             bottom = bottom.to(device)
             target = bottom
             source_sequence, target_sequence = (
@@ -153,7 +155,7 @@ def run_model(args, epoch, loader, model, optimizer, scheduler, device,
                 class_conditioning=class_conditioning_tensors)
 
         time_frequency_logits_out = model.module.to_time_frequency_map(
-            logits_sequence_out)
+            logits_sequence_out, kind=kind, permute_output_as_logits=True)
 
         loss = criterion(time_frequency_logits_out, target)
 

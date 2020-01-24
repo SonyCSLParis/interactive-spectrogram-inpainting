@@ -58,7 +58,7 @@ bottom_codemap = (torch.arange(bottom_frequencies * bottom_duration)
                   .repeat(2, 1, 1, 3))
 
 kind = 'target'
-bottom_flattened, _ = model.flatten_map(bottom_codemap,
+bottom_flattened = model.flatten_map(bottom_codemap,
                                         kind=kind)
 
 bottom_remapped = model.to_time_frequency_map(bottom_flattened,
