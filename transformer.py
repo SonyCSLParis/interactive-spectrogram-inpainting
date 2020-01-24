@@ -255,24 +255,22 @@ class VQNSynthTransformer(nn.Module):
                 )
 
             # initialize start positions for class conditioning in start symbol
-            # TODO(theis): this leads to the first position being
-            # the first modality_embedding_dim! Should start at -modality_embedding_dim
-            # but for now this would change the already saved models' behaviour
             if self.class_conditioning_prepend_to_dummy_input:
                 # insert class conditioning at beginning of the start symbol
                 current_position = 0
                 direction = +1
             else:
+                raise NotImplementedError
                 # insert class conditioning at end of the start symbol
                 current_position = self.d_model
                 direction = -1
 
             for modality_name, modality_embedding_dim in (
                     self.class_conditioning_embedding_dim_per_modality.items()):
-                current_position = current_position + direction*modality_embedding_dim
                 self.class_conditioning_start_positions_per_modality[modality_name] = (
                     current_position
                 )
+                current_position = current_position + direction*modality_embedding_dim
 
         self.source_start_symbol_dim = self.d_model
         # TODO reduce dimensionality of start symbol and use a linear layer to expand it
