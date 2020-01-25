@@ -124,7 +124,8 @@ def sample_model(model: PixelSNAIL, device: Union[torch.device, str],
             input_sequence[:, i+1, :-model.positional_embeddings_dim] = (
                 embedded_sample)
 
-    codemap = model.to_time_frequency_map(codemap_as_sequence).long()
+    codemap = model.to_time_frequency_map(codemap_as_sequence,
+                                          kind=kind).long()
 
     # if model.predict_frequencies_first:
     #     for j in tqdm(range(codemap_size[1]), position=0):
