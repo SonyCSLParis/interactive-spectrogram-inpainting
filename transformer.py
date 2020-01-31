@@ -388,7 +388,7 @@ class VQNSynthTransformer(nn.Module):
             if kind == 'target':
                 positional_embeddings_patch = (
                     self.target_positional_embeddings_patch)
-                batch_dim, frequency_dim, time_dim, embedding_dim = (0, 1, 2, 3)
+
                 repeated_patch_embeddings = (
                     positional_embeddings_patch
                     .repeat(
