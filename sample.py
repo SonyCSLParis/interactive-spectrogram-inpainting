@@ -10,6 +10,7 @@ from tqdm import tqdm
 import numpy as np
 import matplotlib as mpl
 import matplotlib.pyplot as plt
+from sklearn.preprocessing import LabelEncoder
 
 import torch
 import torchaudio
@@ -31,12 +32,50 @@ if torch.cuda.is_available():
 mpl.use('Agg')
 
 
+def make_conditioning_tensors(
+        class_conditioning: Mapping[str, Union[int, str]],
+        label_encoders_per_conditioning: Mapping[str, LabelEncoder],
+        ) -> Mapping[str, torch.Tensor]:
+    class_conditioning_tensors = {}
+
+    def make_conditioning_tensor(value, modality: str) -> torch.Tensor:
+        label_encoder = label_encoders_per_conditioning[modality]
+        try:
+            # check if value is a 2-uple (useful for pitch ranges)
+            range_min, range_max = tuple(int(x) for x in value)
+            assert range_min < range_max, (
+                "Provide increasing range for range conditioning")
+            encoded_label = label_encoder.transform(
+                list(range(range_min, range_max))).transpose()
+        except BaseException:
+            encoded_label = label_encoder.transform([value])
+
+        return torch.from_numpy(encoded_label).long()
+
+    # for value, modality, location in zip(
+    #     [args.instrument_family_conditioning_top,
+    #      args.instrument_family_conditioning_bottom,
+    #      args.pitch_conditioning_top, args.pitch_conditioning_bottom,
+    #      ],
+    #     ['instrument_family_str', 'instrument_family_str', 'pitch', 'pitch'],
+    #     ['top', 'bottom', 'top', 'bottom']
+    # ):
+    #     maybe_add_conditioning(value, modality, location)
+
+    for modality, value in class_conditioning.items():
+        class_conditioning_tensors[modality] = (
+            make_conditioning_tensor(value, modality))
+
+    return class_conditioning_tensors
+
+
 @torch.no_grad()
 def sample_model(model: PixelSNAIL, device: Union[torch.device, str],
                  batch_size: int, codemap_size: Iterable[int],
                  temperature: float, condition: Optional[torch.Tensor] = None,
                  constraint: Optional[torch.Tensor] = None,
-                 class_conditioning: Mapping[str, Iterable[int]] = {}):
+                 class_conditioning: Mapping[str, Iterable[int]] = {},
+                 initial_code: Optional[torch.Tensor] = None):
     """Generate a sample from the provided PixelSNAIL
 
     Arguments:
@@ -56,13 +95,16 @@ def sample_model(model: PixelSNAIL, device: Union[torch.device, str],
             to be the given Tensor.
             `constraint_2D.size` should be less or equal to codemap_size.
     """
+    if initial_code is None:
     codemap = (torch.zeros(batch_size, *codemap_size, dtype=torch.int64)
                .to(device)
                )
+    else:
+        codemap = initial_code.to(device)
     class_conditioning_tensors = {
         conditioning_modality: (
-            conditioning_tensor.long()
-            .repeat(batch_size, 1)
+            conditioning_tensor.unsqueeze(1).long()
+            .expand(batch_size, -1)
             .to(device))
         for conditioning_modality, conditioning_tensor
         in class_conditioning.items()
@@ -219,18 +261,18 @@ if __name__ == '__main__':
                         required=True)
     parser.add_argument('--prediction_bottom_weights_path', type=str,
                         required=True)
-    parser.add_argument('--pitch_conditioning_top', type=int, default=None)
-    parser.add_argument('--instrument_family_conditioning_top', type=str,
-                        default=None)
-    parser.add_argument('--pitch_conditioning_bottom', type=int, default=None)
-    parser.add_argument('--instrument_family_conditioning_bottom', type=str,
-                        default=None)
 
     def key_value(arg: str) -> Iterable[Tuple[str, str]]:
         key, value = arg.split(',')
-        return str(key), str(value)
+        if len(value.split('...')) == 2:
+            value = value.split('...')
+        return key, value
 
     parser.add_argument('--class_conditioning', type=key_value, nargs='*',
+                        default=[])
+    parser.add_argument('--class_conditioning_top', type=key_value, nargs='*',
+                        default=[])
+    parser.add_argument('--class_conditioning_bottom', type=key_value, nargs='*',
                         default=[])
     # TODO(theis): change this, store label encoders inside the VQNSynthTransformer model class
     parser.add_argument('--database_path_for_label_encoders', type=str)
@@ -289,15 +331,26 @@ if __name__ == '__main__':
         device=device
         ).to(device).eval()
 
-    classes_for_conditioning = set()
-    if args.pitch_conditioning_top is not None or args.pitch_conditioning_bottom is not None:
-        classes_for_conditioning.add('pitch')
-    if args.instrument_family_conditioning_top is not None or args.instrument_family_conditioning_bottom is not None:
-        classes_for_conditioning.add('instrument_family_str')
+    def to_dictionary(key_value_list: Iterable[Tuple[any, any]]
+                      ) -> Mapping[any, any]:
+        return {key: value for key, value in key_value_list}
 
-    additional_modalities = set(modality
-                                for modality, _ in args.class_conditioning)
-    classes_for_conditioning.update(additional_modalities)
+    if len(args.class_conditioning_top) > 0:
+        assert len(args.class_conditioning_bottom) > 0
+        class_conditioning_top = to_dictionary(args.class_conditioning_top)
+        class_conditioning_bottom = to_dictionary(
+            args.class_conditioning_bottom)
+    else:
+        # use same conditioning for top and bottom
+        class_conditioning_top = to_dictionary(args.class_conditioning)
+        class_conditioning_bottom = class_conditioning_top
+
+    classes_for_conditioning = set()
+    classes_for_conditioning.update(class_conditioning_top.keys())
+    classes_for_conditioning.update(class_conditioning_bottom.keys())
+    # additional_modalities = set(modality
+    #                             for modality, _ in )
+    # classes_for_conditioning.update(additional_modalities)
 
     if args.database_path_for_label_encoders is not None:
         DATABASE_PATH = expand_path(args.database_path_for_label_encoders)
@@ -307,37 +360,12 @@ if __name__ == '__main__':
         )
         label_encoders_per_conditioning = dataset.label_encoders
 
-    class_conditioning_top = {}
-    class_conditioning_bottom = {}
-
-    def maybe_add_conditioning(value, modality: str, location: str) -> None:
-        if value is None:
-            return
-        label_encoder = label_encoders_per_conditioning[modality]
-        encoded_label = label_encoder.transform([value])
-
-        if location == 'top':
-            class_conditioning_top[modality] = (
-                torch.from_numpy(encoded_label).long())
-        elif location == 'bottom':
-            class_conditioning_bottom[modality] = (
-                torch.from_numpy(encoded_label).long())
-        else:
-            raise ValueError("Invalid location")
-
-    for value, modality, location in zip(
-        [args.instrument_family_conditioning_top,
-         args.instrument_family_conditioning_bottom,
-         args.pitch_conditioning_top, args.pitch_conditioning_bottom,
-         ],
-        ['instrument_family_str', 'instrument_family_str', 'pitch', 'pitch'],
-        ['top', 'bottom', 'top', 'bottom']
-    ):
-        maybe_add_conditioning(value, modality, location)
-
-    for modality, value in args.class_conditioning:
-        for location in ['bottom', 'top']:
-            maybe_add_conditioning(value, modality, location)
+    class_conditioning_tensors_top = make_conditioning_tensors(
+        class_conditioning_top,
+        label_encoders_per_conditioning)
+    class_conditioning_tensors_bottom = make_conditioning_tensors(
+        class_conditioning_bottom,
+        label_encoders_per_conditioning)
 
     with torch.no_grad():
         if args.condition_top_audio_path is not None:
@@ -361,7 +389,7 @@ if __name__ == '__main__':
                 model_top, device, batch_size=1, codemap_size=model_top.shape,
                 temperature=args.temperature,
                 constraint=constraint_code_top_restrained,
-                class_conditioning=class_conditioning_top)
+                class_conditioning=class_conditioning_tensors_top)
 
             # repeat condition for the whole batch
             top_code = top_code_sample.repeat(args.batch_size, 1, 1)
@@ -369,14 +397,14 @@ if __name__ == '__main__':
             top_code_sample = sample_model(
                 model_top, device, args.batch_size, model_top.shape,
                 args.temperature,
-                class_conditioning=class_conditioning_top)
+                class_conditioning=class_conditioning_tensors_top)
             top_code = top_code_sample
 
         # sample bottom code contitioned on the top code
         bottom_sample = sample_model(
             model_bottom, device, args.batch_size, model_bottom.shape,
             args.temperature, condition=top_code,
-            class_conditioning=class_conditioning_bottom
+            class_conditioning=class_conditioning_tensors_bottom,
         )
 
         decoded_sample = model_vqvae.decode_code(top_code, bottom_sample)
