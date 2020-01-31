@@ -423,20 +423,29 @@ if __name__ == '__main__':
         import torchvision.transforms as transforms
         sample_audio, fs_hz = torchaudio.load_wav(CONDITION_TOP_AUDIO_PATH,
                                                   channels_first=True)
+        resampler = torchaudio.transforms.Resample(
+            orig_freq=fs_hz, new_freq=args.sample_rate_hz)
+        sample_audio = resampler(sample_audio.cuda())
         toFloat = transforms.Lambda(lambda x: (x / np.iinfo(np.int16).max))
         sample_audio = toFloat(sample_audio)
         condition_top_audio = sample_audio.flatten().cpu().numpy()
 
     def make_audio(mag_and_IF_batch: torch.Tensor,
-                   condition_audio: Optional[np.ndarray]) -> np.ndarray:
+                   condition_audio: Optional[np.ndarray],
+                   normalize: bool = False) -> np.ndarray:
         audio_batch = inference_vqvae.mag_and_IF_to_audio(
             mag_and_IF_batch, use_mel_frequency=args.use_mel_frequency)
+
+        if normalize:
         normalized_audio_batch = (
             audio_batch
             / audio_batch.abs().max(dim=1, keepdim=True)[0])
-        audio_mono_concatenated = normalized_audio_batch.flatten().cpu().numpy()
+            audio_batch = normalized_audio_batch
+
+        audio_mono_concatenated = audio_batch.flatten().cpu().numpy()
         if condition_audio is not None:
-            audio_mono_concatenated = np.concatenate([condition_audio,
+            audio_mono_concatenated = np.concatenate(
+                [condition_audio,
                                                      np.zeros(condition_audio.shape),
                                                      audio_mono_concatenated])
         return audio_mono_concatenated
