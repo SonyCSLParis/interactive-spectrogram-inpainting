@@ -514,11 +514,12 @@ class InferenceVQVAE(object):
         self.hop_length = hop_length
         self.n_fft = n_fft
 
+    @torch.no_grad()
     def sample_reconstructions(self, dataloader):
         self.vqvae.eval()
 
         iterator = iter(dataloader)
-        mag_and_IF_batch, _ = next(iterator)
+        mag_and_IF_batch, *_ = next(iterator)
         with torch.no_grad():
             reconstructed_mag_and_IF_batch, *_, id_t, id_b = (
                 self.vqvae.forward(
@@ -526,6 +527,7 @@ class InferenceVQVAE(object):
 
         return mag_and_IF_batch, reconstructed_mag_and_IF_batch, id_t, id_b
 
+    @torch.no_grad()
     def mag_and_IF_to_audio(self, mag_and_IF: torch.Tensor,
                             use_mel_frequency: bool = True) -> torch.Tensor:
         input_is_batch = True
