@@ -324,6 +324,7 @@ if __name__ == '__main__':
                         default=[])
     parser.add_argument('--class_conditioning_top', type=key_value, nargs='*',
                         default=[])
+    parser.add_argument('--keep_same_top', action='store_true')
     parser.add_argument('--class_conditioning_bottom', type=key_value, nargs='*',
                         default=[])
     # TODO(theis): change this, store label encoders inside the VQNSynthTransformer model class
@@ -446,11 +447,17 @@ if __name__ == '__main__':
             # repeat condition for the whole batch
             top_code = top_code_sample.repeat(args.batch_size, 1, 1)
         else:
+            batch_size_top = args.batch_size
+            if args.keep_same_top:
+                batch_size_top = 1
             top_code_sample = sample_model(
-                model_top, device, args.batch_size, model_top.shape,
+                model_top, device, batch_size_top, model_top.shape,
                 args.temperature,
                 class_conditioning=class_conditioning_tensors_top)
             top_code = top_code_sample
+
+            if args.keep_same_top:
+                top_code = top_code.repeat(args.batch_size, 1, 1)
 
         # sample bottom code contitioned on the top code
         bottom_sample = sample_model(
