@@ -172,7 +172,8 @@ def sample_model(model: PixelSNAIL, device: Union[torch.device, str],
     sequence_duration = codemap_size[0] * codemap_size[1]
     source_sequence, target_sequence = model.to_sequences(
         codemap, condition,
-        class_conditioning=class_conditioning_tensors
+        class_conditioning=class_conditioning_tensors,
+        mask=mask
     )
 
     if model.conditional_model:
