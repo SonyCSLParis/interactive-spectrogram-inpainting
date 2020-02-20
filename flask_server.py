@@ -3,6 +3,8 @@ from transformer import VQNSynthTransformer
 from sample import (sample_model, make_conditioning_tensors,
                     ConditioningMap, make_conditioning_map)
 from dataset import LMDBDataset
+from GANsynth_pytorch.pytorch_nsynth_lib.nsynth import (
+    wavfile_to_melspec_and_IF)
 
 import soundfile
 import math
@@ -317,6 +319,47 @@ def test_generate():
                              high=vqvae.n_embed_t).unsqueeze(0)
     bottom_code = torch.randint(size=transformer_bottom.shape, low=0,
                                 high=vqvae.n_embed_b).unsqueeze(0)
+
+    class_conditioning_top_map = {
+        modality: make_matrix(transformer_top.shape,
+                              value)
+        for modality, value in class_conditioning_top.items()
+    }
+    class_conditioning_bottom_map = {
+        modality: make_matrix(transformer_bottom.shape,
+                              value)
+        for modality, value in class_conditioning_bottom.items()
+    }
+
+    response = make_response(top_code, bottom_code,
+                             class_conditioning_top_map,
+                             class_conditioning_bottom_map)
+    return response
+
+
+@app.route('/analyze-audio', methods=['POST'])
+def audio_to_codes():
+    global vqvae
+    global DEVICE
+    global FS_HZ
+    global SOUND_DURATION_S
+
+    pitch = int(request.args.get('pitch'))
+    instrument_family_str = str(request.args.get('instrument_family_str'))
+
+    class_conditioning_top = class_conditioning_bottom = {
+        'pitch': pitch,
+        'instrument_family_str': instrument_family_str
+    }
+
+    with tempfile.NamedTemporaryFile(
+            'w+b', suffix=request.files['audio'].filename) as f:
+        audio_file = request.files['audio'].save(f)
+        mel_spec_and_IF = wavfile_to_melspec_and_IF(
+            f.name, FS_HZ, duration_s=SOUND_DURATION_S
+        ).to(DEVICE)
+
+    _, _, _, top_code, bottom_code, *_ = vqvae.encode(mel_spec_and_IF)
 
     class_conditioning_top_map = {
         modality: make_matrix(transformer_top.shape,
