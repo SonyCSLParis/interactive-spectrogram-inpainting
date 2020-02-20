@@ -246,7 +246,7 @@ def generate():
     """
     Return a new, generated sheet
     Usage:
-        [GET/POST] /generate?pitch=XXX&instrument_family=XXX&temperature=XXX
+        [GET/POST] /generate?pitch=XXX&instrument_family_str=XXX&temperature=XXX
         - Request: empty payload, a new sound is synthesized from scratch
         - Response: a new, generated sound
     """

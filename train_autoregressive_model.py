@@ -278,14 +278,14 @@ def run_model(args, epoch: int, loader: DataLoader, model: nn.DataParallel,
             (f'code_prediction-{run_type}_{args.hier}'
              + (('-' + mask_sampler.__class__.__name__) if mask_sampler is not None else '')
              + '/mean_{loss_name}'),
-                                      loss_sum / num_samples_seen_epoch,
-                                      epoch)
+            loss_sum / num_samples_seen_epoch,
+            epoch)
         tensorboard_writer.add_scalar(
             (f'code_prediction-{run_type}_{args.hier}'
              + (('-' + mask_sampler.__class__.__name__) if mask_sampler is not None else '')
              + '/mean_accuracy'),
-                                      total_accuracy / num_samples_seen_epoch,
-                                      epoch)
+            total_accuracy / num_samples_seen_epoch,
+            epoch)
 
     return loss_sum, total_accuracy, num_samples_seen_epoch
 

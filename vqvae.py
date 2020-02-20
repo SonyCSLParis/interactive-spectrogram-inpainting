@@ -1,4 +1,4 @@
-from typing import Optional, Iterable, Union, List, Mapping
+from typing import Optional, Iterable, Union, List, Mapping, Tuple
 import numpy as np
 import pathlib
 import json
@@ -426,7 +426,10 @@ class VQVAE(nn.Module):
         dec = self.decode(quant_t, quant_b)
         return dec, diff, perplexity_t, perplexity_b, id_t, id_b
 
-    def encode(self, input):
+    def encode(self, input: torch.Tensor) -> Tuple[
+            torch.FloatTensor, torch.FloatTensor, torch.FloatStorage,
+            torch.LongTensor, torch.LongTensor,
+            torch.FloatTensor, torch.FloatTensor]:
         if self.use_gansynth_normalization:
             input = self.data_normalizer.normalize(input)
 
