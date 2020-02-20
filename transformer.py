@@ -61,7 +61,9 @@ class VQNSynthTransformer(nn.Module):
         class_conditioning_num_classes_per_modality: Optional[Mapping[str, int]] = None,
         class_conditioning_embedding_dim_per_modality: Optional[Mapping[str, int]] = None,
         class_conditioning_prepend_to_dummy_input: bool = False,
+        add_mask_token_to_symbols: bool = False,
         conditional_model: bool = False,
+        self_conditional_model: bool = False,
         condition_shape: Optional[Tuple[int, int]] = None,
         conditional_model_num_encoder_layers: int = 12,
         conditional_model_num_decoder_layers: int = 6,
@@ -70,16 +72,31 @@ class VQNSynthTransformer(nn.Module):
         unconditional_model_nhead: int = 8,
     ):
         self.shape = shape
+
+        if self_conditional_model:
+            assert use_relative_transformer, (
+                "Self conditioning only meanigful for relative transformers")
+            assert conditional_model, (
+                "Self-conditioning is a specific case of conditioning")
+            assert (condition_shape is None or condition_shape == shape)
+            assert add_mask_token_to_symbols
+
         self.conditional_model = conditional_model
         if self.conditional_model:
             assert condition_shape is not None
+        self.self_conditional_model = self_conditional_model
+        self.add_mask_token_to_symbols = add_mask_token_to_symbols
         self.use_relative_transformer = use_relative_transformer
         if self.use_relative_transformer and not predict_frequencies_first:
             raise (NotImplementedError,
                    "Relative positioning only implemented along time")
         self.condition_shape = condition_shape
+        if self.self_conditional_model:
+            self.condition_shape = self.shape
 
         self.n_class = n_class
+        self.add_mask_token_to_symbols = add_mask_token_to_symbols
+
         self.channel = channel
 
         if kernel_size % 2 == 0:
@@ -121,6 +138,13 @@ class VQNSynthTransformer(nn.Module):
 
         super().__init__()
 
+        if self.add_mask_token_to_symbols:
+            self.n_class_in = self.n_class + 1
+            self.mask_token_index = self.n_class_in - 1
+            self.n_class_out = self.n_class
+        else:
+            self.n_class_out = self.n_class_in = self.n_class
+
         if self.conditional_model:
             self.source_frequencies, self.source_duration = (
                 self.condition_shape)
@@ -158,11 +182,11 @@ class VQNSynthTransformer(nn.Module):
         if self.conditional_model:
             self.output_sizes = (-1, self.target_frequencies,
                                  self.target_duration,
-                                 self.n_class)
+                                 self.n_class_out)
         else:
             self.output_sizes = (-1, self.source_frequencies,
                                  self.source_duration,
-                                 self.n_class)
+                                 self.n_class_out)
 
         self.source_positional_embeddings_frequency = nn.Parameter(
             torch.randn((1,  # batch-size
@@ -218,7 +242,7 @@ class VQNSynthTransformer(nn.Module):
         self.source_embeddings_linear = nn.Linear(
             self.embeddings_dim,
             self.d_model-self.positional_embeddings_dim)
-        self.source_embed = torch.nn.Embedding(self.n_class,
+        self.source_embed = torch.nn.Embedding(self.n_class_in,
                                                self.embeddings_dim)
 
         if self.conditional_model:
@@ -226,12 +250,12 @@ class VQNSynthTransformer(nn.Module):
                 self.embeddings_dim,
                 self.d_model-self.positional_embeddings_dim)
 
-            self.target_embed = torch.nn.Embedding(self.n_class,
+            self.target_embed = torch.nn.Embedding(self.n_class_out,
                                                    self.embeddings_dim)
 
         # convert Transformer outputs to class-probabilities (as logits)
         self.project_transformer_outputs_to_logits = (
-            nn.Linear(self.d_model, self.n_class))
+            nn.Linear(self.d_model, self.n_class_out))
 
         self.class_conditioning_total_embedding_dim = 0
         self.class_conditioning_num_modalities = 0
@@ -514,7 +538,8 @@ class VQNSynthTransformer(nn.Module):
         return input
 
     def prepare_data(self, input: torch.Tensor, kind: Optional[str] = None,
-                     class_conditioning: Mapping[str, torch.Tensor] = {}
+                     class_conditioning: Mapping[str, torch.Tensor] = {},
+                     mask: Optional[torch.Tensor] = None
                      ) -> torch.Tensor:
         if not self.conditional_model:
             assert kind == 'source' or kind is None
@@ -523,6 +548,12 @@ class VQNSynthTransformer(nn.Module):
         batch_size, frequencies, duration = input.shape
 
         input_as_sequence = self.flatten_map(input, kind=kind)
+
+        if self.self_conditional_model and mask is not None:
+            if mask.ndim > 2:
+                mask = self.flatten_map(mask, kind=kind)
+            input_as_sequence = input_as_sequence.masked_fill(
+                mask, self.mask_token_index)
 
         (batch_dim, sequence_dim, embedding_dim) = (0, 1, 2)
 
@@ -631,7 +662,9 @@ class VQNSynthTransformer(nn.Module):
         if not self.predict_low_frequencies_first:
             raise NotImplementedError
 
-        if kind == 'target' and self.use_relative_transformer:
+        if (kind == 'target'
+                and self.use_relative_transformer
+                and not self.self_conditional_model):
             # reshape the data for relative positioning:
             zig_zag_codemap = (
                 self.zig_zag_reshaping_frequencies_first(codemap)
@@ -651,7 +684,8 @@ class VQNSynthTransformer(nn.Module):
     def to_sequences(
             self, input: torch.Tensor,
             condition: Optional[torch.Tensor] = None,
-            class_conditioning: Mapping[str, torch.Tensor] = {}
+            class_conditioning: Mapping[str, torch.Tensor] = {},
+            mask: Optional[torch.BoolTensor] = None
             ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
         batch_dim, frequency_dim, time_dim, embedding_dim = (0, 1, 2, 3)
         batch_size = input.shape[0]
@@ -666,7 +700,8 @@ class VQNSynthTransformer(nn.Module):
         source_sequence, (
             batch_dim, frequency_dim, time_dim) = self.prepare_data(
                 input=source, kind='source',
-                class_conditioning=class_conditioning)
+                class_conditioning=class_conditioning,
+                mask=mask)
 
         if self.conditional_model:
             target_sequence, _ = self.prepare_data(
@@ -674,6 +709,14 @@ class VQNSynthTransformer(nn.Module):
                 class_conditioning=class_conditioning)
         else:
             target_sequence = None
+
+        if self.use_relative_transformer:
+            condition_embeddings_map = self.make_condition_map(
+                class_conditioning)
+            condition_sequence = self.prepare_data(
+                input=condition_embeddings_map,
+                kind='source',
+            )
         (batch_dim, sequence_dim, embedding_dim) = (0, 1, 2)
 
         return source_sequence, target_sequence
@@ -719,7 +762,8 @@ class VQNSynthTransformer(nn.Module):
 
         if (kind == 'target'
                 and self.conditional_model
-                and self.use_relative_transformer):
+                and self.use_relative_transformer
+                and not self.self_conditional_model):
             # reshape the data for relative positioning:
             zig_zag_map = (
                 self.inverse_zig_zag_reshaping_frequencies_first(
@@ -762,9 +806,9 @@ class VQNSynthTransformer(nn.Module):
             output_sequence = self.transformer(
                 time_major_source_sequence,
                 time_major_target_sequence,
-                # no mask on the source to allow performing attention
-                # over the whole conditioning sequence
-                src_mask=None,
+                src_mask=(None if not self.self_conditional_model
+                          else self.causal_mask.t()  # anti-causal mask
+                          ),
                 tgt_mask=self.causal_mask)
         else:
             output_sequence = self.transformer(time_major_source_sequence,

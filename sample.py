@@ -76,7 +76,8 @@ def sample_model(model: PixelSNAIL, device: Union[torch.device, str],
                  constraint: Optional[torch.Tensor] = None,
                  class_conditioning: Mapping[str, Iterable[int]] = {},
                  initial_code: Optional[torch.Tensor] = None,
-                 mask: Optional[torch.Tensor] = None):
+                 mask: Optional[torch.Tensor] = None,
+                 ):
     """Generate a sample from the provided PixelSNAIL
 
     Arguments:
@@ -155,7 +156,8 @@ def sample_model(model: PixelSNAIL, device: Union[torch.device, str],
     if mask is not None:
         mask = model.flatten_map(mask, kind=kind).squeeze(0)
     else:
-        mask = torch.ones(sequence_duration) == 1
+        mask = torch.full((sequence_duration, ), True)
+
 
     for i in tqdm(range(sequence_duration)):
         if not mask[i]:

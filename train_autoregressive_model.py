@@ -26,6 +26,10 @@ from dataset import LMDBDataset
 from pixelsnail import PixelSNAIL, LabelSmoothingLoss
 from transformer import VQNSynthTransformer
 from scheduler import CycleScheduler
+from sequence_mask import (SequenceMask, BernoulliSequenceMask,
+                           UniformProbabilityBernoulliSequenceMask,
+                           UniformMaskedAmountSequenceMask,
+                           ContiguousZonesSequenceMask)
 
 # use matplotlib without an X server
 # on desktop, this prevents matplotlib windows from popping around
@@ -97,6 +101,7 @@ def run_model(args, epoch, loader, model, optimizer, scheduler, device,
               criterion: nn.Module,
               tensorboard_writer: Optional[SummaryWriter] = None,
               is_training: bool = True,
+              mask_sampler: Optional[SequenceMask] = None,
               plot_frequency_batch: int = 200,
               num_codes_dictionary: int = None):
     run_type = 'training' if is_training else 'validation'
@@ -127,17 +132,36 @@ def run_model(args, epoch, loader, model, optimizer, scheduler, device,
         top = top.to(device)
 
         if args.hier == 'top':
-            kind = 'source'
-            target = top
-            source_sequence, _ = (
-                model.module.to_sequences(
-                    top, condition=None,
-                    class_conditioning=class_conditioning_tensors
-                    ))
+            if model.module.self_conditional_model:
+                kind = 'target'
+                source = target = top
 
-            logits_sequence_out, _ = model(
-                source_sequence, condition=None,
-                class_conditioning=class_conditioning_tensors)
+                # apply masking to self-conditioning
+                batch_size = top.shape[0]
+                mask = mask_sampler.sample_mask(batch_size)
+
+
+                masked_source_sequence, target_sequence = (
+                    model.module.to_sequences(
+                        target, condition=source,
+                        class_conditioning=class_conditioning_tensors,
+                        mask=mask)
+                    )
+
+                logits_sequence_out, _ = model(
+                    target_sequence, condition=masked_source_sequence,
+            else:
+                kind = 'source'
+                target = top
+                source_sequence, _ = (
+                    model.module.to_sequences(
+                        top, condition=None,
+                        class_conditioning=class_conditioning_tensors
+                        ))
+
+                logits_sequence_out, _ = model(
+                    source_sequence, condition=None,
+                    class_conditioning=class_conditioning_tensors)
 
         elif args.hier == 'bottom':
             kind = 'target'
@@ -197,7 +221,7 @@ def run_model(args, epoch, loader, model, optimizer, scheduler, device,
                 accuracy,
                 num_samples_seen_total)
 
-        if batch_index % plot_frequency_batch == 0:
+        if tensorboard_writer is not None and batch_index % plot_frequency_batch == 0:
             num_plot_samples = min(batch_size, 10)
             targets_plot_subset = target[:num_plot_samples]
             preds_plot_subset = pred[:num_plot_samples]
@@ -228,10 +252,16 @@ def run_model(args, epoch, loader, model, optimizer, scheduler, device,
     if not is_training and tensorboard_writer is not None:
         # only report metrics over full validation/test set
         loss_name = str(criterion)
-        tensorboard_writer.add_scalar(f'code_prediction-{run_type}_{args.hier}/mean_{loss_name}',
+        tensorboard_writer.add_scalar(
+            (f'code_prediction-{run_type}_{args.hier}'
+             + (('-' + mask_sampler.__class__.__name__) if mask_sampler is not None else '')
+             + '/mean_{loss_name}'),
                                       loss_sum / num_samples_seen_epoch,
                                       epoch)
-        tensorboard_writer.add_scalar(f'code_prediction-{run_type}_{args.hier}/mean_accuracy',
+        tensorboard_writer.add_scalar(
+            (f'code_prediction-{run_type}_{args.hier}'
+             + (('-' + mask_sampler.__class__.__name__) if mask_sampler is not None else '')
+             + '/mean_accuracy'),
                                       total_accuracy / num_samples_seen_epoch,
                                       epoch)
 
@@ -269,6 +299,9 @@ if __name__ == '__main__':
                         type=int, default=16)
     parser.add_argument('--class_conditioning_prepend_to_dummy_input',
                         action='store_true')
+    parser.add_argument('--self_conditional_model', action='store_true',
+                        help=('whether to use an encoder/decoder architecture'
+                              'with masked self-supervision'))
     parser.add_argument('--use_relative_transformer', action='store_true')
     parser.add_argument('--conditional_model_nhead', type=int, default=16)
     parser.add_argument('--conditional_model_num_encoder_layers', type=int,
@@ -296,6 +329,11 @@ if __name__ == '__main__':
     parser.add_argument('--vqvae_run_id', type=str, required=True)
     parser.add_argument('--num_workers', type=int, default=4,
                         help='Number of worker processes for the Dataloaders')
+    parser.add_argument('--mask_sampling_strategy', type=str,
+                        choices=['bernoulli', 'random_p_bernoulli',
+                                 'uniform_masked_amount', 'contiguous_zones'],
+                        default='random_p_bernoulli')
+    parser.add_argument('--bernoulli_masking_probability', type=float)
 
     args = parser.parse_args()
 
@@ -369,14 +407,25 @@ if __name__ == '__main__':
             res_channel=args.n_res_channel,
             dropout=args.dropout,
             n_out_res_block=args.n_out_res_block,
+
             use_relative_transformer=args.use_relative_transformer,
             predict_frequencies_first=args.predict_frequencies_first,
-            conditional_model=False,
-            class_conditioning_num_classes_per_modality=class_conditioning_num_classes_per_modality,
-            class_conditioning_embedding_dim_per_modality=class_conditioning_embedding_dim_per_modality,
-            class_conditioning_prepend_to_dummy_input=args.class_conditioning_prepend_to_dummy_input,
+
+            conditional_model=args.self_conditional_model,
+            self_conditional_model=args.self_conditional_model,
+            add_mask_token_to_symbols=args.self_conditional_model,
+            condition_shape=shape_top if args.self_conditional_model else None,
+
+            class_conditioning_num_classes_per_modality=(
+                class_conditioning_num_classes_per_modality),
+            class_conditioning_embedding_dim_per_modality=(
+                class_conditioning_embedding_dim_per_modality),
+            class_conditioning_prepend_to_dummy_input=(
+                args.class_conditioning_prepend_to_dummy_input),
+
             unconditional_model_nhead=args.unconditional_model_nhead,
-            unconditional_model_num_encoder_layers=args.unconditional_model_num_encoder_layers
+            unconditional_model_num_encoder_layers=(
+                args.unconditional_model_num_encoder_layers)
         )
     elif args.hier == 'bottom':
         snail = prediction_model(
@@ -391,16 +440,25 @@ if __name__ == '__main__':
             dropout=args.dropout,
             n_cond_res_block=args.n_cond_res_block,
             cond_res_channel=args.n_res_channel,
+
             use_relative_transformer=args.use_relative_transformer,
             predict_frequencies_first=args.predict_frequencies_first,
-            class_conditioning_num_classes_per_modality=class_conditioning_num_classes_per_modality,
-            class_conditioning_embedding_dim_per_modality=class_conditioning_embedding_dim_per_modality,
+
             conditional_model=True,
+            self_conditional_model=False,
             condition_shape=shape_top,
             conditional_model_nhead=args.conditional_model_nhead,
-            conditional_model_num_encoder_layers=args.conditional_model_num_encoder_layers,
-            conditional_model_num_decoder_layers=args.conditional_model_num_decoder_layers,
-            class_conditioning_prepend_to_dummy_input=args.class_conditioning_prepend_to_dummy_input
+            conditional_model_num_encoder_layers=(
+                args.conditional_model_num_encoder_layers),
+            conditional_model_num_decoder_layers=(
+                args.conditional_model_num_decoder_layers),
+
+            class_conditioning_num_classes_per_modality=(
+                class_conditioning_num_classes_per_modality),
+            class_conditioning_embedding_dim_per_modality=(
+                class_conditioning_embedding_dim_per_modality),
+            class_conditioning_prepend_to_dummy_input=(
+                args.class_conditioning_prepend_to_dummy_input)
         )
 
     initial_epoch = 0
@@ -456,12 +514,34 @@ if __name__ == '__main__':
         CHECKPOINTS_DIR_PATH
         / f'{checkpoint_name}-best_performing.pt')
 
+    mask_sampler = None
+    if args.hier == 'top' and args.self_conditional_model:
+        mask_sampler_kwargs = {
+            'sequence_duration': (
+                model.module.source_transformer_sequence_length),
+            'mask_token_index': model.module.mask_token_index
+        }
+        if args.mask_sampling_strategy == 'bernoulli':
+            mask_sampler = BernoulliSequenceMask(
+                **mask_sampler_kwargs,
+                probability=args.bernoulli_masking_probability)
+        if args.mask_sampling_strategy == 'random_p_bernoulli':
+            mask_sampler = UniformProbabilityBernoulliSequenceMask(
+                **mask_sampler_kwargs)
+        elif args.mask_sampling_strategy == 'uniform_masked_amount':
+            mask_sampler = UniformMaskedAmountSequenceMask(
+                **mask_sampler_kwargs)
+        elif args.mask_sampling_strategy == 'contiguous_zones':
+            mask_sampler = ContinousZonesSequenceMask(
+                **mask_sampler_kwargs)
+
     if validation_loader is not None:
         best_validation_loss = float("inf")
     for epoch in range(initial_epoch, args.num_epochs):
         run_model(args, epoch, loader, model, optimizer, scheduler, device,
                   criterion, tensorboard_writer=tensorboard_writer,
                   is_training=True,
+                  mask_sampler=mask_sampler,
                   num_codes_dictionary=snail.n_class,
                   plot_frequency_batch=args.plot_frequency_batch)
 
@@ -480,7 +560,8 @@ if __name__ == '__main__':
                     args, epoch, validation_loader, model, optimizer,
                     scheduler, device, criterion,
                     tensorboard_writer=tensorboard_writer, is_training=False,
-                    num_codes_dictionary=snail.n_class)
+                    num_codes_dictionary=snail.n_class,
+                    mask_sampler=mask_sampler)
             if total_validation_loss < best_validation_loss:
                 best_validation_loss = total_validation_loss
 
