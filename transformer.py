@@ -61,6 +61,7 @@ class VQNSynthTransformer(nn.Module):
         class_conditioning_num_classes_per_modality: Optional[Mapping[str, int]] = None,
         class_conditioning_embedding_dim_per_modality: Optional[Mapping[str, int]] = None,
         class_conditioning_prepend_to_dummy_input: bool = False,
+        local_class_conditioning: bool = False,
         add_mask_token_to_symbols: bool = False,
         conditional_model: bool = False,
         self_conditional_model: bool = False,
@@ -93,6 +94,7 @@ class VQNSynthTransformer(nn.Module):
         self.condition_shape = condition_shape
         if self.self_conditional_model:
             self.condition_shape = self.shape
+        self.local_class_conditioning = local_class_conditioning
 
         self.n_class = n_class
         self.add_mask_token_to_symbols = add_mask_token_to_symbols
@@ -257,8 +259,8 @@ class VQNSynthTransformer(nn.Module):
         self.project_transformer_outputs_to_logits = (
             nn.Linear(self.d_model, self.n_class_out))
 
-        self.class_conditioning_total_embedding_dim = 0
         self.class_conditioning_num_modalities = 0
+        self.class_conditioning_total_dim = 0
         self.class_conditioning_embedding_layers = nn.ModuleDict()
         self.class_conditioning_class_to_index_per_modality = {}
         self.class_conditioning_start_positions_per_modality = {}
@@ -295,6 +297,10 @@ class VQNSynthTransformer(nn.Module):
                     current_position
                 )
                 current_position = current_position + direction*modality_embedding_dim
+
+            self.class_conditioning_total_dim_with_positions = (
+                self.class_conditioning_total_dim
+                + self.positional_embeddings_dim)
 
         self.source_start_symbol_dim = self.d_model
         # TODO reduce dimensionality of start symbol and use a linear layer to expand it
@@ -355,7 +361,10 @@ class VQNSynthTransformer(nn.Module):
                     num_channels_encoder=self.source_num_channels,
                     num_events_encoder=self.source_num_events,
                     num_channels_decoder=self.target_num_channels,
-                    num_events_decoder=self.target_num_events
+                    num_events_decoder=self.target_num_events,
+                    conditional=self.local_class_conditioning,
+                    condition_embeddings_dim=(
+                        self.class_conditioning_total_dim_with_positions)
                 )
 
                 custom_decoder = TransformerDecoderCustom(
@@ -630,15 +639,16 @@ class VQNSynthTransformer(nn.Module):
         # repeat start-symbol over whole batch
         start_symbol = start_symbol.repeat(batch_size, 1, 1)
 
-        # add conditioning tensors to start-symbol
-        for condition_name, class_condition in class_conditioning.items():
-            embeddings = (
-                self.class_conditioning_embedding_layers[
-                    condition_name](class_condition)).squeeze(1)
-            start_position = (
-                self.class_conditioning_start_positions_per_modality[
-                    condition_name])
-            start_symbol[:, 0, start_position:start_position+embeddings.shape[1]] = embeddings
+        if not self.local_class_conditioning:
+            # add conditioning tensors to start-symbol
+            for condition_name, class_condition in class_conditioning.items():
+                embeddings = (
+                    self.class_conditioning_embedding_layers[
+                        condition_name](class_condition)).squeeze(1)
+                start_position = (
+                    self.class_conditioning_start_positions_per_modality[
+                        condition_name])
+                start_symbol[:, 0, start_position:start_position+embeddings.shape[1]] = embeddings
 
         sequence_with_start_symbol = torch.cat(
                 [start_symbol,
@@ -710,16 +720,44 @@ class VQNSynthTransformer(nn.Module):
         else:
             target_sequence = None
 
-        if self.use_relative_transformer:
-            condition_embeddings_map = self.make_condition_map(
-                class_conditioning)
-            condition_sequence = self.prepare_data(
-                input=condition_embeddings_map,
-                kind='source',
-            )
         (batch_dim, sequence_dim, embedding_dim) = (0, 1, 2)
 
         return source_sequence, target_sequence
+
+    def make_condition_sequence(self,
+                                class_conditioning: Mapping[str, torch.Tensor],
+                                ) -> torch.Tensor:
+        kind = 'source'
+
+        # if len(class_conditioning) == 0:
+        #     batch_size = 0
+        if len(class_conditioning) == 0:
+            raise NotImplementedError
+
+        batch_size = list(class_conditioning.values())[0].shape[0]
+        embeddings = torch.zeros(batch_size, self.source_frequencies,
+                                 self.source_duration,
+                                 self.class_conditioning_total_dim
+                                 )
+
+        for condition_name, class_condition in class_conditioning.items():
+            condition_embeddings = (
+                self.class_conditioning_embedding_layers[
+                    condition_name](class_condition))
+            start_position = (
+                    self.class_conditioning_start_positions_per_modality[
+                        condition_name])
+            end_position = start_position + condition_embeddings.shape[-1]
+            embeddings[..., start_position:end_position] = condition_embeddings
+
+        embeddings_sequence = self.flatten_map(embeddings,
+                                               kind=kind)
+
+        class_embeddings_sequence_with_positions = (
+            self.add_positions_to_sequence(embeddings_sequence,
+                                           kind=kind,
+                                           embedding_dim=-1))
+        return class_embeddings_sequence_with_positions
 
     def to_time_frequency_map(self, sequence: torch.Tensor, kind: str,
                               permute_output_as_logits: bool = False) -> torch.Tensor:
@@ -785,7 +823,7 @@ class VQNSynthTransformer(nn.Module):
 
     def forward(self, input: torch.Tensor,
                 condition: Optional[torch.Tensor] = None,
-                class_conditioning: Mapping[str, torch.Tensor] = {},
+                class_condition: Optional[torch.Tensor] = None,
                 cache: Optional[Mapping[str, torch.Tensor]] = None):
         (batch_dim, sequence_dim) = (0, 1)
 
@@ -800,6 +838,11 @@ class VQNSynthTransformer(nn.Module):
         time_major_source_sequence = source_sequence.transpose(0, 1)
         if self.conditional_model:
             time_major_target_sequence = target_sequence.transpose(0, 1)
+
+        if self.local_class_conditioning:
+            time_major_class_condition_sequence = class_condition.transpose(0, 1)
+        else:
+            time_major_class_condition_sequence = None
         (batch_dim, sequence_dim) = (1, 0)
 
         if self.conditional_model:
@@ -809,7 +852,8 @@ class VQNSynthTransformer(nn.Module):
                 src_mask=(None if not self.self_conditional_model
                           else self.causal_mask.t()  # anti-causal mask
                           ),
-                tgt_mask=self.causal_mask)
+                tgt_mask=self.causal_mask,
+                condition=time_major_class_condition_sequence)
         else:
             output_sequence = self.transformer(time_major_source_sequence,
                                                mask=self.causal_mask)

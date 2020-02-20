@@ -1,11 +1,12 @@
 from vqvae import VQVAE, InferenceVQVAE
 from transformer import VQNSynthTransformer
-from sample import sample_model, make_conditioning_tensors
+from sample import (sample_model, make_conditioning_tensors,
+                    ConditioningMap, make_conditioning_map)
 from dataset import LMDBDataset
 
 import soundfile
 import math
-from typing import List, Optional, Union, Tuple
+from typing import List, Optional, Union, Tuple, Mapping
 import click
 import tempfile
 import zipfile
@@ -220,6 +221,18 @@ def init_app(vqvae_parameters_path,
         app.run(host='0.0.0.0', port=port, threaded=False)
 
 
+def make_matrix(shape: Tuple[int, int],
+                value: Union[str, int]
+                ) -> ConditioningMap:
+    return [[value] * shape[1]] * shape[0]
+
+
+def masked_fill(array, mask, value):
+    return [[value if mask_value else previous_value
+             for previous_value, mask_value in zip(array_row, mask_row)]
+            for array_row, mask_row in zip(array, mask)]
+
+
 @torch.no_grad()
 @app.route('/generate', methods=['GET', 'POST'])
 def generate():
@@ -230,17 +243,14 @@ def generate():
         - Request: empty payload, a new sound is synthesized from scratch
         - Response: a new, generated sound
     """
-    global vqvae
-    global inference_vqvae
     global transformer_top
     global transformer_bottom
     global label_encoders_per_modality
-    global use_mel_frequency
     global DEVICE
 
-    pitch = int(request.args.get('pitch'))
-    instrument_family_str = str(request.args.get('instrument_family'))
     temperature = float(request.args.get('temperature'))
+    pitch = int(request.args.get('pitch'))
+    instrument_family_str = str(request.args.get('instrument_family_str'))
 
     class_conditioning_top = class_conditioning_bottom = {
         'pitch': pitch,
@@ -272,7 +282,20 @@ def generate():
         class_conditioning=class_conditioning_tensors_bottom
     )
 
-    response = make_response(top_code, bottom_code)
+    class_conditioning_top_map = {
+        modality: make_matrix(transformer_top.shape,
+                              value)
+        for modality, value in class_conditioning_top.items()
+    }
+    class_conditioning_bottom_map = {
+        modality: make_matrix(transformer_bottom.shape,
+                              value)
+        for modality, value in class_conditioning_bottom.items()
+    }
+
+    response = make_response(top_code, bottom_code,
+                             class_conditioning_top_map,
+                             class_conditioning_bottom_map)
     return response
 
 
@@ -282,13 +305,33 @@ def test_generate():
     global transformer_top
     global transformer_bottom
 
+    pitch = int(request.args.get('pitch'))
+    instrument_family_str = str(request.args.get('instrument_family_str'))
+
+    class_conditioning_top = class_conditioning_bottom = {
+        'pitch': pitch,
+        'instrument_family_str': instrument_family_str
+    }
+
     top_code = torch.randint(size=transformer_top.shape, low=0,
                              high=vqvae.n_embed_t).unsqueeze(0)
     bottom_code = torch.randint(size=transformer_bottom.shape, low=0,
                                 high=vqvae.n_embed_b).unsqueeze(0)
 
-    print(bottom_code)
-    response = make_response(top_code, bottom_code)
+    class_conditioning_top_map = {
+        modality: make_matrix(transformer_top.shape,
+                              value)
+        for modality, value in class_conditioning_top.items()
+    }
+    class_conditioning_bottom_map = {
+        modality: make_matrix(transformer_bottom.shape,
+                              value)
+        for modality, value in class_conditioning_bottom.items()
+    }
+
+    response = make_response(top_code, bottom_code,
+                             class_conditioning_top_map,
+                             class_conditioning_bottom_map)
     return response
 
 
@@ -301,28 +344,41 @@ def timerange_change():
         - Request:
         - Response:
     """
+    global transformer_top
     global transformer_bottom
     global label_encoders_per_modality
     global DEVICE
 
-    pitch = int(request.args.get('pitch'))
     layer = str(request.args.get('layer'))
-    instrument_family_str = str(request.args.get('instrument_family'))
     temperature = float(request.args.get('temperature'))
 
-    class_conditioning_top = class_conditioning_bottom = {
+    # try to retrieve local conditioning map in the request's JSON payload
+    (class_conditioning_top_map, class_conditioning_bottom_map,
+     input_conditioning_top, input_conditioning_bottom) = (
+        parse_conditioning(request)
+    )
+    instrument_family_str = str(request.args.get('instrument_family_str'))
+    pitch = int(request.args.get('pitch'))
+    class_conditioning_bottom = {
         'pitch': pitch,
         'instrument_family_str': instrument_family_str
     }
-    class_conditioning_tensors_top = make_conditioning_tensors(
-        class_conditioning_top,
-        label_encoders_per_modality)
+
+    if class_conditioning_top_map is None:
+        # try to retrieve conditioning from http arguments
+        class_conditioning_top = class_conditioning_bottom
+        class_conditioning_tensors_top = make_conditioning_tensors(
+            class_conditioning_top,
+            label_encoders_per_modality)
+    else:
+        class_conditioning_tensors_top = None
+
     class_conditioning_tensors_bottom = make_conditioning_tensors(
         class_conditioning_bottom,
         label_encoders_per_modality)
 
     top_code, bottom_code = parse_codes(request)
-    generation_mask = parse_mask(request)
+    generation_mask_batched = parse_mask(request).to(DEVICE)
 
     if layer == 'bottom':
         bottom_code_resampled = sample_model(
@@ -333,26 +389,35 @@ def timerange_change():
             codemap_size=transformer_bottom.shape,
             temperature=temperature,
             class_conditioning=class_conditioning_tensors_bottom,
+            local_class_conditioning_map=None,
             initial_code=bottom_code,
-            mask=generation_mask
+            mask=generation_mask_batched
         )
 
         # create JSON response
-        response = make_response(top_code, bottom_code_resampled)
+        response = make_response(top_code, bottom_code_resampled,
+                                 input_conditioning_top,
+                                 input_conditioning_bottom)
     elif layer == 'top':
+        if transformer_top.self_conditional_model:
+            condition = top_code
+        else:
+            condition = None
         top_code_resampled = sample_model(
             model=transformer_top,
+            condition=condition,
             device=DEVICE,
             batch_size=1,
             codemap_size=transformer_top.shape,
             temperature=temperature,
             class_conditioning=class_conditioning_tensors_top,
+            local_class_conditioning_map=class_conditioning_top_map,
             initial_code=top_code,
-            mask=generation_mask
+            mask=generation_mask_batched
         )
 
-        generation_mask_bottom = (
-            generation_mask.repeat_interleave(2, 1)
+        generation_mask_bottom_batched = (
+            generation_mask_batched.repeat_interleave(2, 1)
             .repeat_interleave(2, 2)
         )
         bottom_code_resampled = sample_model(
@@ -363,12 +428,25 @@ def timerange_change():
             codemap_size=transformer_bottom.shape,
             temperature=temperature,
             class_conditioning=class_conditioning_tensors_bottom,
+            local_class_conditioning_map=None,
             initial_code=bottom_code,
-            mask=generation_mask_bottom
+            mask=generation_mask_bottom_batched
         )
 
+        # update conditioning map
+        bottom_mask = generation_mask_bottom_batched[0]
+        new_conditioning_map_bottom = {
+            modality: masked_fill(modality_conditioning,
+                                  bottom_mask,
+                                  class_conditioning_bottom[modality])
+            for modality, modality_conditioning
+            in input_conditioning_bottom.items()
+        }
+
         # create JSON response
-        response = make_response(top_code_resampled, bottom_code_resampled)
+        response = make_response(top_code_resampled, bottom_code_resampled,
+                                 input_conditioning_top,
+                                 new_conditioning_map_bottom)
 
     return response
 
@@ -396,6 +474,34 @@ def parse_codes(request) -> Tuple[torch.LongTensor,
     return top_code, bottom_code
 
 
+def parse_conditioning(request) -> Tuple[torch.LongTensor,
+                                         torch.LongTensor,
+                                         Mapping[str, ConditioningMap],
+                                         Mapping[str, ConditioningMap],
+                                         ]:
+    global transformer_top
+    global transformer_bottom
+    global label_encoders_per_modality
+
+    json_data = request.get_json(force=True)
+
+    if 'top_conditioning' not in json_data.keys():
+        return None, None
+
+    conditioning_top = json_data['top_conditioning']
+    conditioning_bottom = json_data['bottom_conditioning']
+
+    class_conditioning_top_map = make_conditioning_map(
+        json_data['top_conditioning'],
+        label_encoders_per_modality)
+    class_conditioning_bottom_map = make_conditioning_map(
+        json_data['bottom_conditioning'],
+        label_encoders_per_modality)
+
+    return (class_conditioning_top_map, class_conditioning_bottom_map,
+            conditioning_top, conditioning_bottom)
+
+
 def parse_mask(request) -> torch.BoolTensor:
     json_data = request.get_json(force=True)
 
@@ -408,6 +514,8 @@ def parse_mask(request) -> torch.BoolTensor:
 
 def make_response(top_code: torch.Tensor,
                   bottom_code: torch.Tensor,
+                  class_conditioning_top_map: Mapping[str, ConditioningMap],
+                  class_conditioning_bottom_map: Mapping[str, ConditioningMap],
                   send_files: bool = False):
     global transformer_top
     global transformer_bottom
@@ -421,8 +529,10 @@ def make_response(top_code: torch.Tensor,
         bottom_code, kind='target')[0].int().cpu().numpy().tolist()
 
     return flask.jsonify({'top_code': top_code_flattened,
-                          'bottom_code': bottom_code_flattened}
-                         )
+                          'bottom_code': bottom_code_flattened,
+                          'top_conditioning': class_conditioning_top_map,
+                          'bottom_conditioning': class_conditioning_bottom_map,
+                          })
 
 
 @app.route('/get-audio', methods=['POST'])

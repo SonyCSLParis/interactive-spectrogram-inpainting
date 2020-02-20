@@ -97,7 +97,8 @@ def num_samples_in_loader(loader: torch.utils.data.DataLoader):
         return len(loader) * batch_size
 
 
-def run_model(args, epoch, loader, model, optimizer, scheduler, device,
+def run_model(args, epoch: int, loader: DataLoader, model: nn.DataParallel,
+              optimizer, scheduler, device,
               criterion: nn.Module,
               tensorboard_writer: Optional[SummaryWriter] = None,
               is_training: bool = True,
@@ -129,6 +130,20 @@ def run_model(args, epoch, loader, model, optimizer, scheduler, device,
             for condition_name, condition_tensor
             in class_conditioning_tensors.items()}
 
+        if model.module.self_conditional_model and model.module.local_class_conditioning:
+            class_conditioning_tensors = {
+                key: tensor.view(-1, 1, 1).repeat(
+                    1,
+                    model.module.source_frequencies,
+                    model.module.source_duration)
+                for key, tensor in class_conditioning_tensors.items()
+            }
+        else:
+            class_conditioning_tensors = {
+                key: tensor.view(-1, 1)
+                for key, tensor in class_conditioning_tensors.items()
+            }
+
         top = top.to(device)
 
         if args.hier == 'top':
@@ -140,6 +155,14 @@ def run_model(args, epoch, loader, model, optimizer, scheduler, device,
                 batch_size = top.shape[0]
                 mask = mask_sampler.sample_mask(batch_size)
 
+                if model.module.local_class_conditioning:
+                    class_condition_sequence = (
+                        model.module.make_condition_sequence(
+                            class_conditioning_tensors
+                            )
+                        )
+                else:
+                    class_condition_sequence = None
 
                 masked_source_sequence, target_sequence = (
                     model.module.to_sequences(
@@ -150,6 +173,7 @@ def run_model(args, epoch, loader, model, optimizer, scheduler, device,
 
                 logits_sequence_out, _ = model(
                     target_sequence, condition=masked_source_sequence,
+                    class_condition=class_condition_sequence)
             else:
                 kind = 'source'
                 target = top
@@ -160,8 +184,7 @@ def run_model(args, epoch, loader, model, optimizer, scheduler, device,
                         ))
 
                 logits_sequence_out, _ = model(
-                    source_sequence, condition=None,
-                    class_conditioning=class_conditioning_tensors)
+                    source_sequence, condition=None)
 
         elif args.hier == 'bottom':
             kind = 'target'
@@ -175,8 +198,7 @@ def run_model(args, epoch, loader, model, optimizer, scheduler, device,
 
             logits_sequence_out, _ = model(
                 target_sequence,
-                condition=source_sequence,
-                class_conditioning=class_conditioning_tensors)
+                condition=source_sequence)
 
         time_frequency_logits_out = model.module.to_time_frequency_map(
             logits_sequence_out, kind=kind, permute_output_as_logits=True)
@@ -303,6 +325,7 @@ if __name__ == '__main__':
                         help=('whether to use an encoder/decoder architecture'
                               'with masked self-supervision'))
     parser.add_argument('--use_relative_transformer', action='store_true')
+    parser.add_argument('--use_local_class_conditioning', action='store_true')
     parser.add_argument('--conditional_model_nhead', type=int, default=16)
     parser.add_argument('--conditional_model_num_encoder_layers', type=int,
                         default=12)
@@ -415,6 +438,7 @@ if __name__ == '__main__':
             self_conditional_model=args.self_conditional_model,
             add_mask_token_to_symbols=args.self_conditional_model,
             condition_shape=shape_top if args.self_conditional_model else None,
+            local_class_conditioning=args.use_local_class_conditioning,
 
             class_conditioning_num_classes_per_modality=(
                 class_conditioning_num_classes_per_modality),

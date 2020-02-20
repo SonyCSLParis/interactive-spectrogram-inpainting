@@ -33,12 +33,13 @@ mpl.use('Agg')
 
 
 def make_conditioning_tensors(
-        class_conditioning: Mapping[str, Union[int, str]],
+        class_conditioning: Mapping[str, Union[int, str, Tuple[int, int]]],
         label_encoders_per_conditioning: Mapping[str, LabelEncoder],
         ) -> Mapping[str, torch.Tensor]:
     class_conditioning_tensors = {}
 
-    def make_conditioning_tensor(value, modality: str) -> torch.Tensor:
+    def make_conditioning_tensor(value: Union[int, str, Tuple[int, int]],
+                                 modality: str) -> torch.Tensor:
         label_encoder = label_encoders_per_conditioning[modality]
         try:
             # check if value is a 2-uple (useful for pitch ranges)
@@ -69,6 +70,33 @@ def make_conditioning_tensors(
     return class_conditioning_tensors
 
 
+ConditioningMap = Union[Iterable[Iterable[str]],
+                        Iterable[Iterable[int]]]
+
+
+def make_conditioning_map(class_conditioning: Mapping[str, ConditioningMap],
+                          label_encoders_per_conditioning: Mapping[
+                              str, LabelEncoder],
+                          ) -> Mapping[str, torch.Tensor]:
+    class_conditioning_tensors = {}
+
+    def map_to_tensor(conditioning_map: ConditioningMap, modality: str):
+        label_encoder = label_encoders_per_conditioning[modality]
+
+        num_rows = len(conditioning_map)
+        num_columns = len(conditioning_map[0])
+        conditioning_tensor = torch.zeros(num_rows, num_columns).long()
+
+        for row_index, row in enumerate(conditioning_map):
+            encoded_row = label_encoder.transform(row)
+            conditioning_tensor[row_index] = torch.from_numpy(encoded_row)
+
+        return conditioning_tensor.unsqueeze(0)  # prepare in batched format
+
+    return {modality: map_to_tensor(conditioning_map, modality)
+            for modality, conditioning_map in class_conditioning.items()}
+
+
 @torch.no_grad()
 def sample_model(model: PixelSNAIL, device: Union[torch.device, str],
                  batch_size: int, codemap_size: Iterable[int],
@@ -77,6 +105,7 @@ def sample_model(model: PixelSNAIL, device: Union[torch.device, str],
                  class_conditioning: Mapping[str, Iterable[int]] = {},
                  initial_code: Optional[torch.Tensor] = None,
                  mask: Optional[torch.Tensor] = None,
+                 local_class_conditioning_map: Optional[Mapping[str, Iterable[int]]] = None,
                  ):
     """Generate a sample from the provided PixelSNAIL
 
@@ -98,19 +127,23 @@ def sample_model(model: PixelSNAIL, device: Union[torch.device, str],
             `constraint_2D.size` should be less or equal to codemap_size.
     """
     if initial_code is None:
-    codemap = (torch.zeros(batch_size, *codemap_size, dtype=torch.int64)
-               .to(device)
-               )
+        codemap = (torch.zeros(batch_size, *codemap_size, dtype=torch.int64)
+                   .to(device)
+                   )
     else:
         codemap = initial_code.to(device)
-    class_conditioning_tensors = {
-        conditioning_modality: (
-            conditioning_tensor.unsqueeze(1).long()
-            .expand(batch_size, -1)
-            .to(device))
-        for conditioning_modality, conditioning_tensor
-        in class_conditioning.items()
-    }
+
+    if local_class_conditioning_map is None:
+        class_conditioning_tensors = {
+            conditioning_modality: (
+                conditioning_tensor.unsqueeze(1).long()
+                .expand(batch_size, -1)
+                .to(device))
+            for conditioning_modality, conditioning_tensor
+            in class_conditioning.items()
+        }
+    else:
+        class_conditioning_tensors = local_class_conditioning_map
     parallel_model = nn.DataParallel(model)
 
     constraint_height = 0
@@ -158,13 +191,19 @@ def sample_model(model: PixelSNAIL, device: Union[torch.device, str],
     else:
         mask = torch.full((sequence_duration, ), True)
 
+    class_condition_sequence = None
+    if model.self_conditional_model:
+        class_condition_sequence = (
+            model.make_condition_sequence(class_conditioning_tensors)
+            )
 
     for i in tqdm(range(sequence_duration)):
         if not mask[i]:
             continue
 
         logits_sequence_out, _ = parallel_model(
-            input_sequence, condition_sequence)
+            input_sequence, condition_sequence,
+            class_condition_sequence)
 
         next_step_probabilities = torch.softmax(
             logits_sequence_out[:, i, :] / temperature,
