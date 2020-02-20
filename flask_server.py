@@ -451,6 +451,53 @@ def timerange_change():
     return response
 
 
+@app.route('/erase', methods=['POST'])
+def erase():
+    global transformer_top
+    global transformer_bottom
+    global label_encoders_per_modality
+    global DEVICE
+
+    layer = str(request.args.get('layer'))
+    amplitude = float(request.args.get('eraser_amplitude'))
+
+    top_code, bottom_code = parse_codes(request)
+    generation_mask = parse_mask(request).to(DEVICE)[0]
+
+    logmelspectrogram, IF = vqvae.decode_code(top_code,
+                                              bottom_code)[0]
+
+    upsampling_f = logmelspectrogram.shape[0] // generation_mask.shape[0]
+    upsampling_t = logmelspectrogram.shape[1] // generation_mask.shape[1]
+
+    upsampled_mask = (generation_mask.float().flip(0)
+                      .repeat_interleave(upsampling_f, 0)
+                      .repeat_interleave(upsampling_t, 1)
+                      ).flip(0)
+    amplitude_mask = 200 * amplitude * upsampled_mask
+    # amplitude_mask = 1 - upsampled_mask
+
+    masked_logmelspectrogram_and_IF = torch.cat(
+        [(logmelspectrogram - amplitude_mask).unsqueeze(0),
+         IF.unsqueeze(0)],
+        dim=0
+    ).unsqueeze(0)
+
+    spectrogram_image_path = make_spectrogram_image(
+        masked_logmelspectrogram_and_IF[0, 0],
+        filename='debug_masked_spectrogram'
+    )
+
+    _, _, _, new_top_code, new_bottom_code, *_ = vqvae.encode(
+        masked_logmelspectrogram_and_IF)
+
+    (_, _, input_conditioning_top, input_conditioning_bottom) = (
+        parse_conditioning(request))
+    return make_response(new_top_code, new_bottom_code,
+                         input_conditioning_top,
+                         input_conditioning_bottom)
+
+
 def parse_codes(request) -> Tuple[torch.LongTensor,
                                   torch.LongTensor]:
     global transformer_top
