@@ -83,7 +83,8 @@ def full_frame(width=None, height=None):
     return fig, ax
 
 
-def make_spectrogram_image(spectrogram: torch.Tensor) -> pathlib.Path:
+def make_spectrogram_image(spectrogram: torch.Tensor,
+                           filename: str = 'spectrogram') -> pathlib.Path:
     """Generate and save a png image for the provided spectrogram.
 
     Assumes melscale frequency axis.
@@ -99,17 +100,21 @@ def make_spectrogram_image(spectrogram: torch.Tensor) -> pathlib.Path:
     # ax.set_axis_off()
     fig, ax = full_frame(width=12, height=8)
     spectrogram_np = spectrogram.cpu().numpy()
-    librosa.display.specshow(spectrogram_np, y_axis='mel', ax=ax, sr=FS_HZ,
-                             cmap='viridis',
+    librosa.display.specshow(spectrogram_np,
+                             #  y_axis='mel',
+                             ax=ax,
+                             sr=FS_HZ, cmap='viridis',
                              hop_length=HOP_LENGTH)
     # ax.margins(0)
     # fig.tight_layout()
 
     image_format = 'png'
     # output_path = tempfile.mktemp() + '.' + image_format
-    output_path = upload_directory + 'spectrogram' + '.' + image_format
+    output_path = upload_directory + filename + '.' + image_format
     fig.savefig(output_path, format=image_format, dpi=200,
                 pad_inches=0, bbox_inches=0)
+    fig.clear()
+    plt.close()
     return output_path
 
 
@@ -527,8 +532,7 @@ def erase():
     ).unsqueeze(0)
 
     spectrogram_image_path = make_spectrogram_image(
-        masked_logmelspectrogram_and_IF[0, 0],
-        filename='debug_masked_spectrogram'
+        masked_logmelspectrogram_and_IF[0, 0]
     )
 
     _, _, _, new_top_code, new_bottom_code, *_ = vqvae.encode(
