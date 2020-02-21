@@ -452,9 +452,14 @@ if __name__ == '__main__':
 
             use_identity_memory_mask=args.use_identity_memory_mask,
 
+            conditional_model_nhead=args.conditional_model_nhead,
+            conditional_model_num_encoder_layers=(
+                args.conditional_model_num_encoder_layers),
+            conditional_model_num_decoder_layers=(
+                args.conditional_model_num_decoder_layers),
             unconditional_model_nhead=args.unconditional_model_nhead,
             unconditional_model_num_encoder_layers=(
-                args.unconditional_model_num_encoder_layers)
+                args.unconditional_model_num_encoder_layers),
         )
     elif args.hier == 'bottom':
         snail = prediction_model(
