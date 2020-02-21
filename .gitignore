@@ -114,3 +114,8 @@ runs/
 *.mdb
 *.wav
 *.json
+*.svg
+
+*.DS_Store
+app.log*
+uploads/
