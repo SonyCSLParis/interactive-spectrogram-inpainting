@@ -68,7 +68,7 @@ class VQNSynthTransformer(nn.Module):
         condition_shape: Optional[Tuple[int, int]] = None,
         conditional_model_num_encoder_layers: int = 12,
         conditional_model_num_decoder_layers: int = 6,
-        conditional_model_nhead: int = 16,
+        conditional_model_nhead: int = 8,
         unconditional_model_num_encoder_layers: int = 6,
         unconditional_model_nhead: int = 8,
     ):
@@ -853,6 +853,7 @@ class VQNSynthTransformer(nn.Module):
                           else self.causal_mask.t()  # anti-causal mask
                           ),
                 tgt_mask=self.causal_mask,
+                memory_mask=self.causal_mask.t() + self.causal_mask,
                 condition=time_major_class_condition_sequence)
         else:
             output_sequence = self.transformer(time_major_source_sequence,
