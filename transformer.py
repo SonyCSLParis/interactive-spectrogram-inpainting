@@ -167,19 +167,23 @@ class VQNSynthTransformer(nn.Module):
                 self.target_frequencies * self.target_duration)
 
             if self.use_relative_transformer:
-                self.target_events_per_source_patch = (
-                    (self.target_duration // self.source_duration)
-                    * (self.target_frequencies // self.source_frequencies)
-                )
-                self.target_num_channels = (
-                    self.target_events_per_source_patch)
+                if not self.self_conditional_model:
+                    self.target_events_per_source_patch = (
+                        (self.target_duration // self.source_duration)
+                        * (self.target_frequencies // self.source_frequencies)
+                    )
+                    self.target_num_channels = (
+                        self.target_events_per_source_patch)
 
-                self.target_num_events = (
-                    self.target_transformer_sequence_length
-                    // self.target_num_channels)
-                # downsampling_factor = (
-                #     (self.shape[0]*self.shape[1])
-                #     // (self.condition_shape[0]*self.condition_shape[1]))
+                    self.target_num_events = (
+                        self.target_transformer_sequence_length
+                        // self.target_num_channels)
+                    # downsampling_factor = (
+                    #     (self.shape[0]*self.shape[1])
+                    #     // (self.condition_shape[0]*self.condition_shape[1]))
+                else:
+                    self.target_num_channels = self.source_num_channels
+                    self.target_num_events = self.source_num_events
 
         if self.conditional_model:
             self.output_sizes = (-1, self.target_frequencies,

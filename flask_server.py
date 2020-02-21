@@ -3,6 +3,8 @@ from transformer import VQNSynthTransformer
 from sample import (sample_model, make_conditioning_tensors,
                     ConditioningMap, make_conditioning_map)
 from dataset import LMDBDataset
+from GANsynth_pytorch.pytorch_nsynth_lib.nsynth import (
+    wavfile_to_melspec_and_IF)
 
 import soundfile
 import math
@@ -81,7 +83,8 @@ def full_frame(width=None, height=None):
     return fig, ax
 
 
-def make_spectrogram_image(spectrogram: torch.Tensor) -> pathlib.Path:
+def make_spectrogram_image(spectrogram: torch.Tensor,
+                           filename: str = 'spectrogram') -> pathlib.Path:
     """Generate and save a png image for the provided spectrogram.
 
     Assumes melscale frequency axis.
@@ -97,17 +100,21 @@ def make_spectrogram_image(spectrogram: torch.Tensor) -> pathlib.Path:
     # ax.set_axis_off()
     fig, ax = full_frame(width=12, height=8)
     spectrogram_np = spectrogram.cpu().numpy()
-    librosa.display.specshow(spectrogram_np, y_axis='mel', ax=ax, sr=FS_HZ,
-                             cmap='viridis',
+    librosa.display.specshow(spectrogram_np,
+                             #  y_axis='mel',
+                             ax=ax,
+                             sr=FS_HZ, cmap='viridis',
                              hop_length=HOP_LENGTH)
     # ax.margins(0)
     # fig.tight_layout()
 
     image_format = 'png'
     # output_path = tempfile.mktemp() + '.' + image_format
-    output_path = upload_directory + 'spectrogram' + '.' + image_format
+    output_path = upload_directory + filename + '.' + image_format
     fig.savefig(output_path, format=image_format, dpi=200,
                 pad_inches=0, bbox_inches=0)
+    fig.clear()
+    plt.close()
     return output_path
 
 
@@ -239,7 +246,7 @@ def generate():
     """
     Return a new, generated sheet
     Usage:
-        [GET/POST] /generate?pitch=XXX&instrument_family=XXX&temperature=XXX
+        [GET/POST] /generate?pitch=XXX&instrument_family_str=XXX&temperature=XXX
         - Request: empty payload, a new sound is synthesized from scratch
         - Response: a new, generated sound
     """
@@ -317,6 +324,47 @@ def test_generate():
                              high=vqvae.n_embed_t).unsqueeze(0)
     bottom_code = torch.randint(size=transformer_bottom.shape, low=0,
                                 high=vqvae.n_embed_b).unsqueeze(0)
+
+    class_conditioning_top_map = {
+        modality: make_matrix(transformer_top.shape,
+                              value)
+        for modality, value in class_conditioning_top.items()
+    }
+    class_conditioning_bottom_map = {
+        modality: make_matrix(transformer_bottom.shape,
+                              value)
+        for modality, value in class_conditioning_bottom.items()
+    }
+
+    response = make_response(top_code, bottom_code,
+                             class_conditioning_top_map,
+                             class_conditioning_bottom_map)
+    return response
+
+
+@app.route('/analyze-audio', methods=['POST'])
+def audio_to_codes():
+    global vqvae
+    global DEVICE
+    global FS_HZ
+    global SOUND_DURATION_S
+
+    pitch = int(request.args.get('pitch'))
+    instrument_family_str = str(request.args.get('instrument_family_str'))
+
+    class_conditioning_top = class_conditioning_bottom = {
+        'pitch': pitch,
+        'instrument_family_str': instrument_family_str
+    }
+
+    with tempfile.NamedTemporaryFile(
+            'w+b', suffix=request.files['audio'].filename) as f:
+        audio_file = request.files['audio'].save(f)
+        mel_spec_and_IF = wavfile_to_melspec_and_IF(
+            f.name, FS_HZ, duration_s=SOUND_DURATION_S
+        ).to(DEVICE)
+
+    _, _, _, top_code, bottom_code, *_ = vqvae.encode(mel_spec_and_IF)
 
     class_conditioning_top_map = {
         modality: make_matrix(transformer_top.shape,
@@ -449,6 +497,52 @@ def timerange_change():
                                  new_conditioning_map_bottom)
 
     return response
+
+
+@app.route('/erase', methods=['POST'])
+def erase():
+    global transformer_top
+    global transformer_bottom
+    global label_encoders_per_modality
+    global DEVICE
+
+    layer = str(request.args.get('layer'))
+    amplitude = float(request.args.get('eraser_amplitude'))
+
+    top_code, bottom_code = parse_codes(request)
+    generation_mask = parse_mask(request).to(DEVICE)[0]
+
+    logmelspectrogram, IF = vqvae.decode_code(top_code,
+                                              bottom_code)[0]
+
+    upsampling_f = logmelspectrogram.shape[0] // generation_mask.shape[0]
+    upsampling_t = logmelspectrogram.shape[1] // generation_mask.shape[1]
+
+    upsampled_mask = (generation_mask.float().flip(0)
+                      .repeat_interleave(upsampling_f, 0)
+                      .repeat_interleave(upsampling_t, 1)
+                      ).flip(0)
+    amplitude_mask = 200 * amplitude * upsampled_mask
+    # amplitude_mask = 1 - upsampled_mask
+
+    masked_logmelspectrogram_and_IF = torch.cat(
+        [(logmelspectrogram - amplitude_mask).unsqueeze(0),
+         IF.unsqueeze(0)],
+        dim=0
+    ).unsqueeze(0)
+
+    spectrogram_image_path = make_spectrogram_image(
+        masked_logmelspectrogram_and_IF[0, 0]
+    )
+
+    _, _, _, new_top_code, new_bottom_code, *_ = vqvae.encode(
+        masked_logmelspectrogram_and_IF)
+
+    (_, _, input_conditioning_top, input_conditioning_bottom) = (
+        parse_conditioning(request))
+    return make_response(new_top_code, new_bottom_code,
+                         input_conditioning_top,
+                         input_conditioning_bottom)
 
 
 def parse_codes(request) -> Tuple[torch.LongTensor,

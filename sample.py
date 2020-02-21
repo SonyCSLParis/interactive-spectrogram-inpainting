@@ -172,7 +172,8 @@ def sample_model(model: PixelSNAIL, device: Union[torch.device, str],
     sequence_duration = codemap_size[0] * codemap_size[1]
     source_sequence, target_sequence = model.to_sequences(
         codemap, condition,
-        class_conditioning=class_conditioning_tensors
+        class_conditioning=class_conditioning_tensors,
+        mask=mask
     )
 
     if model.conditional_model:
@@ -219,31 +220,6 @@ def sample_model(model: PixelSNAIL, device: Union[torch.device, str],
 
     codemap = model.to_time_frequency_map(codemap_as_sequence,
                                           kind=kind).long()
-
-    # if model.predict_frequencies_first:
-    #     for j in tqdm(range(codemap_size[1]), position=0):
-    #         start_row = (0 if j >= constraint_width
-    #                      else constraint_height)
-    #         for i in tqdm(range(start_row, codemap_size[0]), position=1):
-    #             out, cache = parallel_model(
-    #                 codemap, condition=condition,
-    #                 cache=cache,
-    #                 class_conditioning=class_conditioning)
-    #             prob = torch.softmax(out[:, :, i, j] / temperature, 1)
-    #             sample = torch.multinomial(prob, 1).squeeze(-1)
-    #             codemap[:, i, j] = sample
-    # else:
-    #     for i in tqdm(range(codemap_size[0]), position=0):
-    #         start_column = (0 if i >= constraint_height
-    #                         else constraint_width)
-    #         for j in tqdm(range(start_column, codemap_size[1]), position=1):
-    #             out, cache = parallel_model(
-    #                 codemap, condition=condition,
-    #                 cache=cache,
-    #                 class_conditioning=class_conditioning)
-    #             prob = torch.softmax(out[:, :, i, j] / temperature, 1)
-    #             sample = torch.multinomial(prob, 1).squeeze(-1)
-    #             codemap[:, i, j] = sample
 
     return codemap
 
@@ -323,6 +299,7 @@ if __name__ == '__main__':
                         default=[])
     parser.add_argument('--class_conditioning_top', type=key_value, nargs='*',
                         default=[])
+    parser.add_argument('--keep_same_top', action='store_true')
     parser.add_argument('--class_conditioning_bottom', type=key_value, nargs='*',
                         default=[])
     # TODO(theis): change this, store label encoders inside the VQNSynthTransformer model class
@@ -419,6 +396,7 @@ if __name__ == '__main__':
         label_encoders_per_conditioning)
 
     with torch.no_grad():
+        initial_code = None
         if args.condition_top_audio_path is not None:
             condition_mel_spec_and_IF = wavfile_to_melspec_and_IF(
                 args.condition_top_audio_path)
@@ -428,6 +406,7 @@ if __name__ == '__main__':
 
             # repeat condition for the whole batch
             top_code = condition_code_top.repeat(args.batch_size, 1, 1)
+            initial_code = condition_code_bottom.repeat(args.batch_size, 1, 1)
         elif args.constraint_top_audio_path is not None:
             constraint_mel_spec_and_IF = wavfile_to_melspec_and_IF(
                 args.constraint_top_audio_path)
@@ -445,17 +424,24 @@ if __name__ == '__main__':
             # repeat condition for the whole batch
             top_code = top_code_sample.repeat(args.batch_size, 1, 1)
         else:
+            batch_size_top = args.batch_size
+            if args.keep_same_top:
+                batch_size_top = 1
             top_code_sample = sample_model(
-                model_top, device, args.batch_size, model_top.shape,
+                model_top, device, batch_size_top, model_top.shape,
                 args.temperature,
                 class_conditioning=class_conditioning_tensors_top)
             top_code = top_code_sample
+
+            if args.keep_same_top:
+                top_code = top_code.repeat(args.batch_size, 1, 1)
 
         # sample bottom code contitioned on the top code
         bottom_sample = sample_model(
             model_bottom, device, args.batch_size, model_bottom.shape,
             args.temperature, condition=top_code,
             class_conditioning=class_conditioning_tensors_bottom,
+            initial_code=initial_code
         )
 
         decoded_sample = model_vqvae.decode_code(top_code, bottom_sample)
@@ -488,17 +474,17 @@ if __name__ == '__main__':
             mag_and_IF_batch, use_mel_frequency=args.use_mel_frequency)
 
         if normalize:
-        normalized_audio_batch = (
-            audio_batch
-            / audio_batch.abs().max(dim=1, keepdim=True)[0])
+            normalized_audio_batch = (
+                audio_batch
+                / audio_batch.abs().max(dim=1, keepdim=True)[0])
             audio_batch = normalized_audio_batch
 
         audio_mono_concatenated = audio_batch.flatten().cpu().numpy()
         if condition_audio is not None:
             audio_mono_concatenated = np.concatenate(
                 [condition_audio,
-                                                     np.zeros(condition_audio.shape),
-                                                     audio_mono_concatenated])
+                 np.zeros(condition_audio.shape),
+                 audio_mono_concatenated])
         return audio_mono_concatenated
 
     os.makedirs(OUTPUT_DIRECTORY, exist_ok=True)

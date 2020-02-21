@@ -2,7 +2,14 @@ import torch
 from torch import nn, optim
 from transformer import VQNSynthTransformer
 
-model_parameters = {
+bottom_model_parameters = {
+    "n_class": 512,
+    "channel": 256,
+    "kernel_size": 5,
+    "n_block": 4,
+    "n_res_block": 4,
+    "res_channel": 256,
+
     "shape": [
         64,
         8
@@ -13,23 +20,10 @@ model_parameters = {
         32,
         4
     ],
-    "n_class": 512,
-    "channel": 256,
-    "kernel_size": 5,
-    "n_block": 4,
-    "n_res_block": 4,
-    "res_channel": 256,
-    "attention": False,
-    "dropout": 0.1,
-    "n_cond_res_block": 3,
-    "cond_res_channel": 256,
-    "cond_res_kernel": 3,
-    "n_out_res_block": 0,
     "predict_frequencies_first": True,
     "predict_low_frequencies_first": True,
-    "d_model": 512,
-    "embeddings_dim": 32,
-    "positional_embeddings_dim": 16,
+    "class_conditioning_prepend_to_dummy_input": True,
+
     "class_conditioning_num_classes_per_modality": {
         "instrument_family_str": 11,
         "pitch": 61
@@ -38,33 +32,58 @@ model_parameters = {
         "instrument_family_str": 64,
         "pitch": 64
     },
-    "class_conditioning_prepend_to_dummy_input": True,
-    "conditional_model_num_encoder_layers": 4,
-    "conditional_model_nhead": 8,
-    "conditional_model_num_decoder_layers": 6
 }
+top_model_parameters = bottom_model_parameters.copy()
+top_model_parameters['self_conditional_model'] = True
+top_model_parameters['add_mask_token_to_symbols'] = True
+top_model_parameters['shape'] = bottom_model_parameters['condition_shape']
 
-model = VQNSynthTransformer(**model_parameters)
+top_model = VQNSynthTransformer(**top_model_parameters)
+bottom_model = VQNSynthTransformer(**bottom_model_parameters)
 
-top_frequencies, top_duration = model_parameters['condition_shape']
-bottom_frequencies, bottom_duration = model_parameters['shape']
+top_frequencies, top_duration = bottom_model_parameters['condition_shape']
+bottom_frequencies, bottom_duration = bottom_model_parameters['shape']
 
+batch_size = 2
+embedding_dim = 3
 top_codemap = (torch.arange(top_frequencies * top_duration)
                .reshape(1, top_frequencies, top_duration, 1)
-               .repeat(2, 1, 1, 3))
+               .repeat(batch_size, 1, 1, embedding_dim))
 
 bottom_codemap = (torch.arange(bottom_frequencies * bottom_duration)
                   .reshape(1, bottom_frequencies, bottom_duration, 1)
-                  .repeat(2, 1, 1, 3))
+                  .repeat(batch_size, 1, 1, embedding_dim))
+
+
+def check_equality(a: torch.Tensor, b: torch.Tensor,
+                   kind: str, layer: str) -> None:
+    if not torch.equal(a, b):
+        print(layer, kind)
+        print(a[0, 0])
+        print(b[0, 0])
+        assert False
+
+
+layer = 'top'
+kind = 'source'
+top_flattened = top_model.flatten_map(top_codemap,
+                                      kind=kind)
+top_remapped = top_model.to_time_frequency_map(top_flattened,
+                                               kind=kind)
+check_equality(top_codemap, top_remapped, kind, layer)
 
 kind = 'target'
-bottom_flattened = model.flatten_map(bottom_codemap,
-                                        kind=kind)
+top_flattened_as_target = top_model.flatten_map(top_codemap,
+                                                kind=kind)
+top_remapped_as_target = top_model.to_time_frequency_map(
+    top_flattened_as_target, kind=kind)
+check_equality(top_codemap, top_remapped_as_target, kind, layer)
 
-bottom_remapped = model.to_time_frequency_map(bottom_flattened,
-                                              kind=kind)
+hier = 'bottom'
+kind = 'target'
+bottom_flattened = bottom_model.flatten_map(bottom_codemap,
+                                            kind=kind)
 
-print(bottom_codemap[0, 0])
-print(bottom_remapped[0, 0])
-
-STOP
+bottom_remapped = bottom_model.to_time_frequency_map(bottom_flattened,
+                                                     kind=kind)
+check_equality(bottom_codemap, bottom_remapped, kind, layer)
