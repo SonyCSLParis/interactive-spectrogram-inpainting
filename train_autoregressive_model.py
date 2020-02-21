@@ -324,6 +324,7 @@ if __name__ == '__main__':
     parser.add_argument('--self_conditional_model', action='store_true',
                         help=('whether to use an encoder/decoder architecture'
                               'with masked self-supervision'))
+    parser.add_argument('--use_identity_memory_mask', action='store_true')
     parser.add_argument('--use_relative_transformer', action='store_true')
     parser.add_argument('--use_local_class_conditioning', action='store_true')
     parser.add_argument('--conditional_model_nhead', type=int, default=16)
@@ -447,6 +448,8 @@ if __name__ == '__main__':
             class_conditioning_prepend_to_dummy_input=(
                 args.class_conditioning_prepend_to_dummy_input),
 
+            use_identity_memory_mask=args.use_identity_memory_mask,
+
             unconditional_model_nhead=args.unconditional_model_nhead,
             unconditional_model_num_encoder_layers=(
                 args.unconditional_model_num_encoder_layers)
@@ -476,6 +479,7 @@ if __name__ == '__main__':
                 args.conditional_model_num_encoder_layers),
             conditional_model_num_decoder_layers=(
                 args.conditional_model_num_decoder_layers),
+            use_identity_memory_mask=args.use_identity_memory_mask,
 
             class_conditioning_num_classes_per_modality=(
                 class_conditioning_num_classes_per_modality),
