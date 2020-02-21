@@ -358,6 +358,8 @@ if __name__ == '__main__':
                                  'uniform_masked_amount', 'contiguous_zones'],
                         default='random_p_bernoulli')
     parser.add_argument('--bernoulli_masking_probability', type=float)
+    parser.add_argument('--uniform_masked_amount_min_masking_ratio',
+                        type=float, default=0.)
 
     args = parser.parse_args()
 
@@ -558,7 +560,8 @@ if __name__ == '__main__':
                 **mask_sampler_kwargs)
         elif args.mask_sampling_strategy == 'uniform_masked_amount':
             mask_sampler = UniformMaskedAmountSequenceMask(
-                **mask_sampler_kwargs)
+                **mask_sampler_kwargs,
+                min_masking_ratio=args.uniform_masked_amount_min_masking_ratio)
         elif args.mask_sampling_strategy == 'contiguous_zones':
             mask_sampler = ContinousZonesSequenceMask(
                 **mask_sampler_kwargs)
