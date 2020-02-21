@@ -71,6 +71,7 @@ class VQNSynthTransformer(nn.Module):
         conditional_model_nhead: int = 16,
         unconditional_model_num_encoder_layers: int = 6,
         unconditional_model_nhead: int = 8,
+        use_identity_memory_mask: bool = False,
     ):
         self.shape = shape
 
@@ -132,6 +133,7 @@ class VQNSynthTransformer(nn.Module):
             self.conditional_model_num_encoder_layers = conditional_model_num_encoder_layers
             self.conditional_model_nhead = conditional_model_nhead
             self.conditional_model_num_decoder_layers = conditional_model_num_decoder_layers
+            self.use_identity_memory_mask = use_identity_memory_mask
         else:
             self.unconditional_model_num_encoder_layers = unconditional_model_num_encoder_layers
             self.unconditional_model_nhead = unconditional_model_nhead
@@ -357,11 +359,14 @@ class VQNSynthTransformer(nn.Module):
                 num_layers=encoder_num_layers
             )
             if self.conditional_model:
+                attention_bias_type_cross = 'relative_attention_target_source'
+                if self.use_identity_memory_mask:
+                    attention_bias_type_cross = 'no_bias'
                 decoder_layer = TransformerDecoderLayerCustom(
                     d_model=self.d_model,
                     nhead=self.conditional_model_nhead,
                     attention_bias_type_self='relative_attention',
-                    attention_bias_type_cross='relative_attention_target_source',
+                    attention_bias_type_cross=attention_bias_type_cross,
                     num_channels_encoder=self.source_num_channels,
                     num_events_encoder=self.source_num_events,
                     num_channels_decoder=self.target_num_channels,
@@ -464,6 +469,17 @@ class VQNSynthTransformer(nn.Module):
         mask = mask.float().masked_fill(mask == 0, float('-inf')).masked_fill(
             mask == 1, float(0.0))
         return mask
+
+    @property
+    def identity_memory_mask(self) -> torch.Tensor:
+        identity_memory_mask = (
+            torch.eye(self.source_transformer_sequence_length).float())
+        identity_memory_mask = (
+            identity_memory_mask
+            .masked_fill(identity_memory_mask == 0, float('-inf'))
+            .masked_fill(identity_memory_mask == 1, float(0.0))
+        )
+        return identity_memory_mask
 
     def zig_zag_reshaping_frequencies_first(self, input: torch.Tensor
                                             ) -> torch.Tensor:
@@ -849,6 +865,10 @@ class VQNSynthTransformer(nn.Module):
             time_major_class_condition_sequence = None
         (batch_dim, sequence_dim) = (1, 0)
 
+        memory_mask = None
+        if self.use_identity_memory_mask:
+            memory_mask = self.identity_memory_mask
+
         if self.conditional_model:
             output_sequence = self.transformer(
                 time_major_source_sequence,
@@ -857,6 +877,7 @@ class VQNSynthTransformer(nn.Module):
                           else self.causal_mask.t()  # anti-causal mask
                           ),
                 tgt_mask=self.causal_mask,
+                memory_mask=memory_mask,
                 condition=time_major_class_condition_sequence)
         else:
             output_sequence = self.transformer(time_major_source_sequence,
