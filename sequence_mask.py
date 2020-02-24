@@ -1,4 +1,5 @@
 import math
+import random
 
 import torch
 
@@ -28,9 +29,16 @@ class BernoulliSequenceMask(SequenceMask):
 
 
 class UniformProbabilityBernoulliSequenceMask(SequenceMask):
+    def __init__(self, low: float = 0., high: float = 1.,
+                 *args, **kwargs):
+        assert 0 <= low < high <= 1
+        super().__init__(*args, **kwargs)
+        self.low = low
+        self.high = high
+
     def sample_mask(self, batch_size: int = 1) -> torch.BoolTensor:
         # sample the Bernoulli masking probability
-        masking_probability = torch.rand(1).item()
+        masking_probability = random.uniform(self.low, self.high)
         return (torch.ones(batch_size, self.sequence_duration)
                 * masking_probability
                 ).bernoulli().bool()

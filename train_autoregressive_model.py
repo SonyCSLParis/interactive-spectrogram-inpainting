@@ -368,6 +368,8 @@ if __name__ == '__main__':
                                  'uniform_masked_amount', 'contiguous_zones'],
                         default='random_p_bernoulli')
     parser.add_argument('--bernoulli_masking_probability', type=float)
+    parser.add_argument('--random_p_bernoulli_p_range', type=float, nargs=2,
+                        default=[0, 1])
     parser.add_argument('--uniform_masked_amount_min_masking_ratio',
                         type=float, default=0.)
     parser.add_argument('--disable_start_symbol_DEBUG', action='store_true')
@@ -585,7 +587,9 @@ if __name__ == '__main__':
                 probability=args.bernoulli_masking_probability)
         if args.mask_sampling_strategy == 'random_p_bernoulli':
             mask_sampler = UniformProbabilityBernoulliSequenceMask(
-                **mask_sampler_kwargs)
+                low=args.random_p_bernoulli_p_range[0],
+                high=args.random_p_bernoulli_p_range[1],
+                **mask_sampler_kwargs,)
         elif args.mask_sampling_strategy == 'uniform_masked_amount':
             mask_sampler = UniformMaskedAmountSequenceMask(
                 **mask_sampler_kwargs,
