@@ -72,6 +72,7 @@ class VQNSynthTransformer(nn.Module):
         unconditional_model_num_encoder_layers: int = 6,
         unconditional_model_nhead: int = 8,
         use_identity_memory_mask: bool = False,
+        use_lstm_DEBUG: bool = False,
         disable_start_symbol_DEBUG: bool = False,
     ):
         self.shape = shape
@@ -139,6 +140,7 @@ class VQNSynthTransformer(nn.Module):
             self.unconditional_model_num_encoder_layers = unconditional_model_num_encoder_layers
             self.unconditional_model_nhead = unconditional_model_nhead
 
+        self.use_lstm_DEBUG = use_lstm_DEBUG
         self.disable_start_symbol_DEBUG = disable_start_symbol_DEBUG
 
         self._instantiation_parameters = self.__dict__.copy()
@@ -326,7 +328,10 @@ class VQNSynthTransformer(nn.Module):
                 torch.randn((1, 1, self.target_start_symbol_dim))
             )
 
-        if not self.use_relative_transformer:
+        if self.use_lstm_DEBUG:
+            raise NotImplementedError(
+                "TODO(theis), debug mode with simple LSTM layers")
+        elif not self.use_relative_transformer:
             if self.conditional_model:
                 self.transformer = nn.Transformer(
                     nhead=self.conditional_model_nhead,
