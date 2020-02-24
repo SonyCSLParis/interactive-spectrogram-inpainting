@@ -133,7 +133,8 @@ def sample_model(model: PixelSNAIL, device: Union[torch.device, str],
     else:
         codemap = initial_code.to(device)
 
-    if local_class_conditioning_map is None:
+    if not model.local_class_conditioning or (
+            local_class_conditioning_map is None):
         class_conditioning_tensors = {
             conditioning_modality: (
                 conditioning_tensor.unsqueeze(1).long()
@@ -193,7 +194,7 @@ def sample_model(model: PixelSNAIL, device: Union[torch.device, str],
         mask = torch.full((sequence_duration, ), True)
 
     class_condition_sequence = None
-    if model.self_conditional_model:
+    if model.local_class_conditioning:
         class_condition_sequence = (
             model.make_condition_sequence(class_conditioning_tensors)
             )

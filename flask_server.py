@@ -418,25 +418,31 @@ def timerange_change():
      input_conditioning_top, input_conditioning_bottom) = (
         parse_conditioning(request)
     )
-    instrument_family_str = str(request.args.get('instrument_family_str'))
-    pitch = int(request.args.get('pitch'))
-    class_conditioning_bottom = {
-        'pitch': pitch,
-        'instrument_family_str': instrument_family_str
+    global_instrument_family_str = str(
+        request.args.get('instrument_family_str'))
+    global_pitch = int(request.args.get('pitch'))
+    global_class_conditioning = {
+        'pitch': global_pitch,
+        'instrument_family_str': global_instrument_family_str
     }
+    if not transformer_bottom.local_class_conditioning:
+        class_conditioning_bottom = global_class_conditioning.copy()
+        class_conditioning_tensors_bottom = make_conditioning_tensors(
+            class_conditioning_bottom,
+            label_encoders_per_modality)
+        class_conditioning_bottom_map = None
+    else:
+        class_conditioning_bottom = class_conditioning_tensors_bottom = None
 
-    if class_conditioning_top_map is None:
+    if not transformer_top.local_class_conditioning:
         # try to retrieve conditioning from http arguments
-        class_conditioning_top = class_conditioning_bottom
+        class_conditioning_top = global_class_conditioning.copy()
         class_conditioning_tensors_top = make_conditioning_tensors(
             class_conditioning_top,
             label_encoders_per_modality)
+        class_conditioning_top_map = None
     else:
-        class_conditioning_tensors_top = None
-
-    class_conditioning_tensors_bottom = make_conditioning_tensors(
-        class_conditioning_bottom,
-        label_encoders_per_modality)
+        class_conditioning_top = class_conditioning_tensors_top = None
 
     top_code, bottom_code = parse_codes(request)
     generation_mask_batched = parse_mask(request).to(DEVICE)
@@ -450,7 +456,7 @@ def timerange_change():
             codemap_size=transformer_bottom.shape,
             temperature=temperature,
             class_conditioning=class_conditioning_tensors_bottom,
-            local_class_conditioning_map=None,
+            local_class_conditioning_map=class_conditioning_bottom_map,
             initial_code=bottom_code,
             mask=generation_mask_batched
         )
@@ -489,7 +495,7 @@ def timerange_change():
             codemap_size=transformer_bottom.shape,
             temperature=temperature,
             class_conditioning=class_conditioning_tensors_bottom,
-            local_class_conditioning_map=None,
+            local_class_conditioning_map=class_conditioning_bottom_map,
             initial_code=bottom_code,
             mask=generation_mask_bottom_batched
         )
