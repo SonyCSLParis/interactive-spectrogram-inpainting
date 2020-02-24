@@ -550,7 +550,8 @@ if __name__ == '__main__':
     scheduler = None
     if args.sched == 'cycle':
         scheduler = CycleScheduler(
-            optimizer, args.lr, n_iter=len(loader) * args.epoch, momentum=None
+            optimizer, args.lr, n_iter=len(loader) * args.num_epochs,
+            momentum=None
         )
 
     num_classes = snail.n_class
