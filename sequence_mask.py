@@ -1,3 +1,5 @@
+import math
+
 import torch
 
 
@@ -35,9 +37,17 @@ class UniformProbabilityBernoulliSequenceMask(SequenceMask):
 
 
 class UniformMaskedAmountSequenceMask(SequenceMask):
+    def __init__(self, min_masking_ratio: float = 0.,
+                 *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.min_masking_ratio = min_masking_ratio
+        self.min_masked_amount = math.ceil(
+            self.sequence_duration * self.min_masking_ratio)
+
     def sample_mask(self, batch_size: int = 1) -> torch.BoolTensor:
         # sample the number of tokens to mask
-        num_masked_tokens = torch.randint(1, self.sequence_duration + 1, (1,)
+        num_masked_tokens = torch.randint(self.min_masked_amount,
+                                          self.sequence_duration + 1, (1,)
                                           ).item()
 
         # sample the indexes of tokens to mask

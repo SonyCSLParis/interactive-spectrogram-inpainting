@@ -60,6 +60,7 @@ HOP_LENGTH = None
 DEVICE = None
 SOUND_DURATION_S = None
 USE_MEL_FREQUENCY = None
+SPECTROGRAMS_UPSAMPLING_FACTOR = None
 
 _num_iterations = None
 _sequence_length_ticks = None
@@ -84,7 +85,9 @@ def full_frame(width=None, height=None):
 
 
 def make_spectrogram_image(spectrogram: torch.Tensor,
-                           filename: str = 'spectrogram') -> pathlib.Path:
+                           filename: str = 'spectrogram',
+                           upsampling_factor: int = 1,
+                           ) -> pathlib.Path:
     """Generate and save a png image for the provided spectrogram.
 
     Assumes melscale frequency axis.
@@ -99,11 +102,17 @@ def make_spectrogram_image(spectrogram: torch.Tensor,
     # fig, ax = plt.subplots(figsize=(12, 8))
     # ax.set_axis_off()
     fig, ax = full_frame(width=12, height=8)
-    spectrogram_np = spectrogram.cpu().numpy()
+    upsampled_spectrogram = (
+        torch.nn.functional.interpolate(
+            spectrogram.unsqueeze(0).unsqueeze(1),
+            mode='bilinear',
+            scale_factor=upsampling_factor)).squeeze(0).squeeze(0)
+    spectrogram_np = upsampled_spectrogram.cpu().numpy()
     librosa.display.specshow(spectrogram_np,
                              #  y_axis='mel',
                              ax=ax,
-                             sr=FS_HZ, cmap='viridis',
+                             sr=FS_HZ * upsampling_factor,
+                             cmap='viridis',
                              hop_length=HOP_LENGTH)
     # ax.margins(0)
     # fig.tight_layout()
@@ -142,6 +151,7 @@ def make_spectrogram_image(spectrogram: torch.Tensor,
               help='number of parallel pseudo-Gibbs sampling iterations (for a single update)')
 @click.option('--n_fft', default=2048)
 @click.option('--hop_length', default=512)
+@click.option('--spectrograms_upsampling_factor', default=4)
 @click.option('--use_mel_frequency', type=int, default=True)
 @click.option('--device', type=click.Choice(['cuda', 'cpu'],
                                             case_sensitive=False),
@@ -160,6 +170,7 @@ def init_app(vqvae_parameters_path,
              num_iterations,
              n_fft,
              hop_length,
+             spectrograms_upsampling_factor,
              use_mel_frequency,
              device,
              port,
@@ -169,11 +180,13 @@ def init_app(vqvae_parameters_path,
     global SOUND_DURATION_S
     global USE_MEL_FREQUENCY
     global DEVICE
+    global SPECTROGRAMS_UPSAMPLING_FACTOR
     FS_HZ = fs_hz
     HOP_LENGTH = hop_length
     SOUND_DURATION_S = sound_duration_s
     DEVICE = device
     USE_MEL_FREQUENCY = use_mel_frequency
+    SPECTROGRAMS_UPSAMPLING_FACTOR = spectrograms_upsampling_factor
 
     global vqvae
     print("Load VQ-VAE")
@@ -531,10 +544,6 @@ def erase():
         dim=0
     ).unsqueeze(0)
 
-    spectrogram_image_path = make_spectrogram_image(
-        masked_logmelspectrogram_and_IF[0, 0]
-    )
-
     _, _, _, new_top_code, new_bottom_code, *_ = vqvae.encode(
         masked_logmelspectrogram_and_IF)
 
@@ -652,6 +661,7 @@ def codes_to_audio_response():
 @app.route('/get-spectrogram-image', methods=['POST'])
 def codes_to_spectrogram_image_response():
     global inference_vqvae
+    global SPECTROGRAMS_UPSAMPLING_FACTOR
 
     top_code, bottom_code = parse_codes(request)
 
@@ -660,7 +670,9 @@ def codes_to_spectrogram_image_response():
 
     # generate spectrogram PNG image
     spectrogram = logmelspectrogram_and_IF[0, 0]
-    spectrogram_image_path = make_spectrogram_image(spectrogram)
+    spectrogram_image_path = make_spectrogram_image(
+        spectrogram,
+        upsampling_factor=SPECTROGRAMS_UPSAMPLING_FACTOR)
 
     return flask.send_file(spectrogram_image_path,
                            mimetype="image/png",
