@@ -72,6 +72,7 @@ class VQNSynthTransformer(nn.Module):
         unconditional_model_num_encoder_layers: int = 6,
         unconditional_model_nhead: int = 8,
         use_identity_memory_mask: bool = False,
+        disable_start_symbol_DEBUG: bool = False,
     ):
         self.shape = shape
 
@@ -137,6 +138,8 @@ class VQNSynthTransformer(nn.Module):
         else:
             self.unconditional_model_num_encoder_layers = unconditional_model_num_encoder_layers
             self.unconditional_model_nhead = unconditional_model_nhead
+
+        self.disable_start_symbol_DEBUG = disable_start_symbol_DEBUG
 
         self._instantiation_parameters = self.__dict__.copy()
 
@@ -639,7 +642,8 @@ class VQNSynthTransformer(nn.Module):
                                kind: str,
                                class_conditioning: Mapping[str, torch.Tensor],
                                sequence_dim: int):
-        if self.conditional_model and kind == 'source':
+        if self.disable_start_symbol_DEBUG or (
+                self.conditional_model and kind == 'source'):
             return sequence_with_positions
         # removing the unnecessary else to remove one level of indentation
 

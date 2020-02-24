@@ -104,7 +104,8 @@ def run_model(args, epoch: int, loader: DataLoader, model: nn.DataParallel,
               is_training: bool = True,
               mask_sampler: Optional[SequenceMask] = None,
               plot_frequency_batch: int = 200,
-              num_codes_dictionary: int = None):
+              num_codes_dictionary: int = None,
+              drop_loss_half_DEBUG: bool = False):
     run_type = 'training' if is_training else 'validation'
     status_bar = tqdm(total=0, position=0, bar_format='{desc}')
     tqdm_loader = tqdm(loader, position=1)
@@ -130,7 +131,8 @@ def run_model(args, epoch: int, loader: DataLoader, model: nn.DataParallel,
             for condition_name, condition_tensor
             in class_conditioning_tensors.items()}
 
-        if model.module.self_conditional_model and model.module.local_class_conditioning:
+        if (model.module.self_conditional_model
+                and model.module.local_class_conditioning):
             class_conditioning_tensors = {
                 key: tensor.view(-1, 1, 1).repeat(
                     1,
@@ -203,7 +205,12 @@ def run_model(args, epoch: int, loader: DataLoader, model: nn.DataParallel,
         time_frequency_logits_out = model.module.to_time_frequency_map(
             logits_sequence_out, kind=kind, permute_output_as_logits=True)
 
-        loss = criterion(time_frequency_logits_out, target)
+        if not drop_loss_half_DEBUG:
+            loss = criterion(time_frequency_logits_out, target)
+        else:
+            loss = criterion(
+                time_frequency_logits_out[..., :model.module.shape[1]//2],
+                target[..., :model.module.shape[1]//2])
 
         if is_training:
             loss.backward()
@@ -360,6 +367,12 @@ if __name__ == '__main__':
     parser.add_argument('--bernoulli_masking_probability', type=float)
     parser.add_argument('--uniform_masked_amount_min_masking_ratio',
                         type=float, default=0.)
+    parser.add_argument('--disable_start_symbol_DEBUG', action='store_true')
+    parser.add_argument(
+        '--drop_loss_half_DEBUG', action='store_true',
+        help="""If set, ignore the second half (in time) of the codemaps,
+        which often contains a lot of silence-mapped symbols and could lead
+        the training to fail""")
 
     args = parser.parse_args()
 
@@ -460,6 +473,7 @@ if __name__ == '__main__':
             unconditional_model_nhead=args.unconditional_model_nhead,
             unconditional_model_num_encoder_layers=(
                 args.unconditional_model_num_encoder_layers),
+            disable_start_symbol_DEBUG=args.disable_start_symbol_DEBUG,
         )
     elif args.hier == 'bottom':
         snail = prediction_model(
@@ -493,7 +507,8 @@ if __name__ == '__main__':
             class_conditioning_embedding_dim_per_modality=(
                 class_conditioning_embedding_dim_per_modality),
             class_conditioning_prepend_to_dummy_input=(
-                args.class_conditioning_prepend_to_dummy_input)
+                args.class_conditioning_prepend_to_dummy_input),
+            disable_start_symbol_DEBUG=args.disable_start_symbol_DEBUG,
         )
 
     initial_epoch = 0
@@ -579,7 +594,8 @@ if __name__ == '__main__':
                   is_training=True,
                   mask_sampler=mask_sampler,
                   num_codes_dictionary=snail.n_class,
-                  plot_frequency_batch=args.plot_frequency_batch)
+                  plot_frequency_batch=args.plot_frequency_batch,
+                  drop_loss_half_DEBUG=args.drop_loss_half_DEBUG)
 
         checkpoint_dict = {
             'command_line_arguments': args.__dict__,
