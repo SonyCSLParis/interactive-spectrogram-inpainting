@@ -329,9 +329,9 @@ if __name__ == '__main__':
     parser.add_argument('--use_local_class_conditioning', action='store_true')
     parser.add_argument('--conditional_model_nhead', type=int, default=16)
     parser.add_argument('--conditional_model_num_encoder_layers', type=int,
-                        default=12)
-    parser.add_argument('--conditional_model_num_decoder_layers', type=int,
                         default=6)
+    parser.add_argument('--conditional_model_num_decoder_layers', type=int,
+                        default=8)
     parser.add_argument('--unconditional_model_nhead', type=int, default=8)
     parser.add_argument('--unconditional_model_num_encoder_layers', type=int,
                         default=6)
@@ -452,7 +452,11 @@ if __name__ == '__main__':
 
             unconditional_model_nhead=args.unconditional_model_nhead,
             unconditional_model_num_encoder_layers=(
-                args.unconditional_model_num_encoder_layers)
+                args.unconditional_model_num_encoder_layers),
+            conditional_model_num_encoder_layers=(
+                args.conditional_model_num_encoder_layers),
+            conditional_model_num_decoder_layers=(
+                args.conditional_model_num_decoder_layers),
         )
     elif args.hier == 'bottom':
         snail = prediction_model(
@@ -501,7 +505,9 @@ if __name__ == '__main__':
             initial_epoch = initial_weights_training_epochs + 1
 
     snail = snail.to(device)
-    optimizer = RAdam(snail.parameters(), lr=args.lr)
+    # test!
+    # optimizer = RAdam(snail.parameters(), lr=args.lr)
+    optimizer = torch.optim.Adam(snail.parameters(), lr=args.lr)
 
     if amp is not None:
         snail, optimizer = amp.initialize(snail, optimizer, opt_level=args.amp)
