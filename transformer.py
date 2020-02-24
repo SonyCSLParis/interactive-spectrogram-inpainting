@@ -94,7 +94,7 @@ class VQNSynthTransformer(nn.Module):
                    "Relative positioning only implemented along time")
         self.condition_shape = condition_shape
         if self.self_conditional_model:
-            self.condition_shape = self.shape
+            self.condition_shape = self.shape.copy()
         self.local_class_conditioning = local_class_conditioning
 
         self.n_class = n_class
