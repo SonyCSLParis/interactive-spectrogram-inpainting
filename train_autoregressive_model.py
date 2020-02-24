@@ -313,6 +313,9 @@ if __name__ == '__main__':
     parser.add_argument('--model_type', type=str,
                         choices=['PixelSNAIL', 'Transformer'],
                         default='PixelSNAIL')
+    parser.add_argument('--optimizer', type=str,
+                        choices=['adam', 'radam'],
+                        default='radam')
     parser.add_argument('--batch_size', type=int, default=32)
     parser.add_argument('--hier', type=str, default='top')
     parser.add_argument('--lr', type=float, default=3e-4)
@@ -523,7 +526,11 @@ if __name__ == '__main__':
             initial_epoch = initial_weights_training_epochs + 1
 
     snail = snail.to(device)
-    optimizer = RAdam(snail.parameters(), lr=args.lr)
+    if args.optimizer == 'adam':
+        optimizer_class = torch.optim.Adam
+    elif args.optimizer == 'radam':
+        optimizer_class = RAdam
+    optimizer = optimizer_class(snail.parameters(), lr=args.lr)
 
     if amp is not None:
         snail, optimizer = amp.initialize(snail, optimizer, opt_level=args.amp)
