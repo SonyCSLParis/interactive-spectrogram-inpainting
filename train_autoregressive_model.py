@@ -315,7 +315,7 @@ if __name__ == '__main__':
                         default='PixelSNAIL')
     parser.add_argument('--optimizer', type=str,
                         choices=['adam', 'radam'],
-                        default='radam')
+                        default='adam')
     parser.add_argument('--batch_size', type=int, default=32)
     parser.add_argument('--hier', type=str, default='top')
     parser.add_argument('--lr', type=float, default=3e-4)
@@ -339,9 +339,9 @@ if __name__ == '__main__':
     parser.add_argument('--use_local_class_conditioning', action='store_true')
     parser.add_argument('--conditional_model_nhead', type=int, default=16)
     parser.add_argument('--conditional_model_num_encoder_layers', type=int,
-                        default=12)
-    parser.add_argument('--conditional_model_num_decoder_layers', type=int,
                         default=6)
+    parser.add_argument('--conditional_model_num_decoder_layers', type=int,
+                        default=8)
     parser.add_argument('--unconditional_model_nhead', type=int, default=8)
     parser.add_argument('--unconditional_model_num_encoder_layers', type=int,
                         default=6)
