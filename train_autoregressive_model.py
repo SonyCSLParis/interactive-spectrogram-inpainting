@@ -97,7 +97,7 @@ def num_samples_in_loader(loader: torch.utils.data.DataLoader):
         return len(loader) * batch_size
 
 
-def run_model(args, epoch: int, loader: DataLoader, model: nn.DataParallel,
+def run_model(args, epoch: int, loader: DataLoader, model: VQNSynthTransformer,
               optimizer, scheduler, device,
               criterion: nn.Module,
               tensorboard_writer: Optional[SummaryWriter] = None,
@@ -122,6 +122,8 @@ def run_model(args, epoch: int, loader: DataLoader, model: nn.DataParallel,
     else:
         model = model.eval()
 
+    parallel_model = nn.DataParallel(model)
+
     for batch_index, (top, bottom, class_conditioning_tensors) in enumerate(tqdm_loader):
         if is_training:
             model.zero_grad()
@@ -131,13 +133,13 @@ def run_model(args, epoch: int, loader: DataLoader, model: nn.DataParallel,
             for condition_name, condition_tensor
             in class_conditioning_tensors.items()}
 
-        if (model.module.self_conditional_model
-                and model.module.local_class_conditioning):
+        if (model.self_conditional_model
+                and model.local_class_conditioning):
             class_conditioning_tensors = {
                 key: tensor.view(-1, 1, 1).repeat(
                     1,
-                    model.module.source_frequencies,
-                    model.module.source_duration)
+                    model.source_frequencies,
+                    model.source_duration)
                 for key, tensor in class_conditioning_tensors.items()
             }
         else:
@@ -149,7 +151,7 @@ def run_model(args, epoch: int, loader: DataLoader, model: nn.DataParallel,
         top = top.to(device)
 
         if args.hier == 'top':
-            if model.module.self_conditional_model:
+            if model.self_conditional_model:
                 kind = 'target'
                 source = target = top
 
@@ -157,9 +159,9 @@ def run_model(args, epoch: int, loader: DataLoader, model: nn.DataParallel,
                 batch_size = top.shape[0]
                 mask = mask_sampler.sample_mask(batch_size)
 
-                if model.module.local_class_conditioning:
+                if model.local_class_conditioning:
                     class_condition_sequence = (
-                        model.module.make_condition_sequence(
+                        model.make_condition_sequence(
                             class_conditioning_tensors
                             )
                         )
@@ -167,25 +169,25 @@ def run_model(args, epoch: int, loader: DataLoader, model: nn.DataParallel,
                     class_condition_sequence = None
 
                 masked_source_sequence, target_sequence = (
-                    model.module.to_sequences(
+                    model.to_sequences(
                         target, condition=source,
                         class_conditioning=class_conditioning_tensors,
                         mask=mask)
                     )
 
-                logits_sequence_out, _ = model(
+                logits_sequence_out, _ = parallel_model(
                     target_sequence, condition=masked_source_sequence,
                     class_condition=class_condition_sequence)
             else:
                 kind = 'source'
                 target = top
                 source_sequence, _ = (
-                    model.module.to_sequences(
+                    model.to_sequences(
                         top, condition=None,
                         class_conditioning=class_conditioning_tensors
                         ))
 
-                logits_sequence_out, _ = model(
+                logits_sequence_out, _ = parallel_model(
                     source_sequence, condition=None)
 
         elif args.hier == 'bottom':
@@ -193,24 +195,24 @@ def run_model(args, epoch: int, loader: DataLoader, model: nn.DataParallel,
             bottom = bottom.to(device)
             target = bottom
             source_sequence, target_sequence = (
-                model.module.to_sequences(
+                model.to_sequences(
                     bottom, condition=top,
                     class_conditioning=class_conditioning_tensors)
             )
 
-            logits_sequence_out, _ = model(
+            logits_sequence_out, _ = parallel_model(
                 target_sequence,
                 condition=source_sequence)
 
-        time_frequency_logits_out = model.module.to_time_frequency_map(
+        time_frequency_logits_out = model.to_time_frequency_map(
             logits_sequence_out, kind=kind, permute_output_as_logits=True)
 
         if not drop_loss_half_DEBUG:
             loss = criterion(time_frequency_logits_out, target)
         else:
             loss = criterion(
-                time_frequency_logits_out[..., :model.module.shape[1]//2],
-                target[..., :model.module.shape[1]//2])
+                time_frequency_logits_out[..., :model.shape[1]//2],
+                target[..., :model.shape[1]//2])
 
         if is_training:
             loss.backward()
@@ -441,7 +443,7 @@ if __name__ == '__main__':
 
     shape_top, shape_bottom = (list(dataset[0][i].shape) for i in range(2))
     if args.hier == 'top':
-        snail = prediction_model(
+        model = prediction_model(
             shape=shape_top,
             n_class=512,
             channel=args.channel,
@@ -481,7 +483,7 @@ if __name__ == '__main__':
             disable_start_symbol_DEBUG=args.disable_start_symbol_DEBUG,
         )
     elif args.hier == 'bottom':
-        snail = prediction_model(
+        model = prediction_model(
             shape=shape_bottom,
             n_class=512,
             channel=args.channel,
@@ -519,25 +521,25 @@ if __name__ == '__main__':
     initial_epoch = 0
     if model_checkpoint_weights is not None:
         if 'model' in model_checkpoint_weights:
-            snail.load_state_dict(model_checkpoint_weights['model'])
+            model.load_state_dict(model_checkpoint_weights['model'])
         else:
-            snail.load_state_dict(model_checkpoint_weights)
+            model.load_state_dict(model_checkpoint_weights)
 
         if 'epoch' in model_checkpoint_weights:
             initial_weights_training_epochs = model_checkpoint_weights['epoch']
             initial_epoch = initial_weights_training_epochs + 1
 
-    snail = snail.to(device)
+    model = model.to(device)
     if args.optimizer == 'adam':
         optimizer_class = torch.optim.Adam
     elif args.optimizer == 'radam':
         optimizer_class = RAdam
-    optimizer = optimizer_class(snail.parameters(), lr=args.lr)
+    optimizer = optimizer_class(model.parameters(), lr=args.lr)
 
     if amp is not None:
-        snail, optimizer = amp.initialize(snail, optimizer, opt_level=args.amp)
+        model, optimizer = amp.initialize(model, optimizer, opt_level=args.amp)
 
-    model = nn.DataParallel(snail).to(device)
+    model = model.to(device)
 
     MAIN_DIR = pathlib.Path(DIRPATH)
     CHECKPOINTS_DIR_PATH = (
@@ -547,7 +549,7 @@ if __name__ == '__main__':
         os.makedirs(CHECKPOINTS_DIR_PATH, exist_ok=True)
         with open(CHECKPOINTS_DIR_PATH / 'command_line_parameters.json', 'w') as f:
             json.dump(args.__dict__, f, indent=4)
-        snail.store_instantiation_parameters(
+        model.store_instantiation_parameters(
             CHECKPOINTS_DIR_PATH / 'model_instantiation_parameters.json')
 
     tensorboard_writer = None
@@ -563,7 +565,7 @@ if __name__ == '__main__':
             momentum=None
         )
 
-    num_classes = snail.n_class
+    num_classes = model.n_class
     criterion = LabelSmoothingLoss(num_classes=num_classes,
                                    smoothing=args.label_smoothing,
                                    dim=1)
@@ -578,8 +580,8 @@ if __name__ == '__main__':
     if args.hier == 'top' and args.self_conditional_model:
         mask_sampler_kwargs = {
             'sequence_duration': (
-                model.module.source_transformer_sequence_length),
-            'mask_token_index': model.module.mask_token_index
+                model.source_transformer_sequence_length),
+            'mask_token_index': model.mask_token_index
         }
         if args.mask_sampling_strategy == 'bernoulli':
             mask_sampler = BernoulliSequenceMask(
