@@ -359,6 +359,7 @@ if __name__ == '__main__':
     parser.add_argument('--plot_frequency_batch', type=int, default=200)
     parser.add_argument('--database_path', type=str, required=True)
     parser.add_argument('--validation_database_path', type=str, default=None)
+    parser.add_argument('--evaluate_only', action='store_true')
     parser.add_argument('--num_training_samples', type=int,
                         help=('If provided, trims to input dataset to only use'
                               'the given number of samples'))
@@ -602,40 +603,50 @@ if __name__ == '__main__':
 
     if validation_loader is not None:
         best_validation_loss = float("inf")
-    for epoch in range(initial_epoch, args.num_epochs):
-        run_model(args, epoch, loader, model, optimizer, scheduler, device,
-                  criterion, tensorboard_writer=tensorboard_writer,
-                  is_training=True,
-                  mask_sampler=mask_sampler,
-                  num_codes_dictionary=snail.n_class,
-                  plot_frequency_batch=args.plot_frequency_batch,
-                  drop_loss_half_DEBUG=args.drop_loss_half_DEBUG)
 
-        checkpoint_dict = {
-            'command_line_arguments': args.__dict__,
-            'model': model.module.state_dict(),
-            'model_instatiation_parameters': (
-                snail._instantiation_parameters),
-            'epoch': epoch}
-        if not args.disable_writes_to_disk:
-            torch.save(checkpoint_dict, checkpoint_path)
+    if args.evaluate_only:
+        with torch.no_grad():
+            total_validation_loss, total_accuracy, num_validation_samples = run_model(
+                args, initial_epoch-1, validation_loader, model, optimizer,
+                scheduler, device, criterion,
+                tensorboard_writer=tensorboard_writer, is_training=False,
+                num_codes_dictionary=model.n_class,
+                mask_sampler=mask_sampler)
+    else:
+        for epoch in range(initial_epoch, args.num_epochs):
+            run_model(args, epoch, loader, model, optimizer, scheduler, device,
+                      criterion, tensorboard_writer=tensorboard_writer,
+                      is_training=True,
+                      mask_sampler=mask_sampler,
+                      num_codes_dictionary=model.n_class,
+                      plot_frequency_batch=args.plot_frequency_batch,
+                      drop_loss_half_DEBUG=args.drop_loss_half_DEBUG)
 
-        if validation_loader is not None:
-            with torch.no_grad():
-                total_validation_loss, total_accuracy, num_validation_samples = run_model(
-                    args, epoch, validation_loader, model, optimizer,
-                    scheduler, device, criterion,
-                    tensorboard_writer=tensorboard_writer, is_training=False,
-                    num_codes_dictionary=snail.n_class,
-                    mask_sampler=mask_sampler)
-            if total_validation_loss < best_validation_loss:
-                best_validation_loss = total_validation_loss
+            checkpoint_dict = {
+                'command_line_arguments': args.__dict__,
+                'model': model.state_dict(),
+                'model_instatiation_parameters': (
+                    model._instantiation_parameters),
+                'epoch': epoch}
+            if not args.disable_writes_to_disk:
+                torch.save(checkpoint_dict, checkpoint_path)
 
-                validation_dict = {
-                    'criterion': str(criterion),
-                    'dataset': args.validation_database_path,
-                    'loss': total_validation_loss
-                }
-                checkpoint_dict['validation'] = validation_dict
-                if not args.disable_writes_to_disk:
-                    torch.save(checkpoint_dict, best_model_checkpoint_path)
+            if validation_loader is not None:
+                with torch.no_grad():
+                    total_validation_loss, total_accuracy, num_validation_samples = run_model(
+                        args, epoch, validation_loader, model, optimizer,
+                        scheduler, device, criterion,
+                        tensorboard_writer=tensorboard_writer, is_training=False,
+                        num_codes_dictionary=model.n_class,
+                        mask_sampler=mask_sampler)
+                if total_validation_loss < best_validation_loss:
+                    best_validation_loss = total_validation_loss
+
+                    validation_dict = {
+                        'criterion': str(criterion),
+                        'dataset': args.validation_database_path,
+                        'loss': total_validation_loss
+                    }
+                    checkpoint_dict['validation'] = validation_dict
+                    if not args.disable_writes_to_disk:
+                        torch.save(checkpoint_dict, best_model_checkpoint_path)
