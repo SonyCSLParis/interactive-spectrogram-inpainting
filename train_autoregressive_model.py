@@ -97,6 +97,19 @@ def num_samples_in_loader(loader: torch.utils.data.DataLoader):
         return len(loader) * batch_size
 
 
+def num_satisfied_constraints(predicted: torch.LongTensor,
+                              condition: torch.LongTensor,
+                              mask: torch.BoolTensor,
+                              ):
+    """Check that a self-conditional model correctly sets the constraints
+    """
+    # positions where the predicted map matches the condition
+    correct = torch.eq(predicted, condition).float()
+    # ignore mistakes where there was no constraint
+    satisfied_constraints = torch.masked_fill(correct, mask, 1)
+    return satisfied_constraints.sum()
+
+
 def run_model(args, epoch: int, loader: DataLoader, model: VQNSynthTransformer,
               optimizer, scheduler, device,
               criterion: nn.Module,
@@ -116,6 +129,10 @@ def run_model(args, epoch: int, loader: DataLoader, model: VQNSynthTransformer,
     num_samples_seen_epoch = 0
     # number of samples seen across runs, useful for TensorBoard tracking
     num_samples_seen_total = epoch * num_samples_in_loader(loader)
+
+    satisfied_constraints_total = None
+    if model.self_conditional_model:
+        satisfied_constraints_total = 0
 
     if is_training:
         model = model.train()
@@ -224,6 +241,12 @@ def run_model(args, epoch: int, loader: DataLoader, model: VQNSynthTransformer,
         _, pred = time_frequency_logits_out.max(1)
         correct = (pred == target).float()
         accuracy = correct.sum() / correct.numel()
+        if model.self_conditional_model:
+            time_frequency_mask = model.to_time_frequency_map(
+                mask, kind='source')
+            satisfied_constraints_batch = num_satisfied_constraints(
+                pred, source, time_frequency_mask)
+            satisfied_constraints_total += satisfied_constraints_batch
 
         lr = optimizer.param_groups[0]['lr']
 
@@ -251,6 +274,12 @@ def run_model(args, epoch: int, loader: DataLoader, model: VQNSynthTransformer,
                 f'code_prediction-{run_type}_{args.hier}-{num_training_samples}_training_samples/accuracy',
                 accuracy,
                 num_samples_seen_total)
+            if model.self_conditional_model:
+                tensorboard_writer.add_scalar(
+                    (f'code_prediction-{run_type}_{args.hier}-{num_training_samples}'
+                     '_training_samples/satisfied_constraints_ratio'),
+                    satisfied_constraints_batch.mean(),
+                    num_samples_seen_total)
 
         if tensorboard_writer is not None and batch_index % plot_frequency_batch == 0:
             num_plot_samples = min(batch_size, 10)
@@ -295,6 +324,13 @@ def run_model(args, epoch: int, loader: DataLoader, model: VQNSynthTransformer,
              + '/mean_accuracy'),
             total_accuracy / num_samples_seen_epoch,
             epoch)
+        if model.self_conditional_model:
+            tensorboard_writer.add_scalar(
+                (f'code_prediction-{run_type}_{args.hier}'
+                 + (('-' + mask_sampler.__class__.__name__) if mask_sampler is not None else '')
+                 + '/satisfied_constraints_ratio'),
+                satisfied_constraints_total / num_samples_seen_epoch,
+                epoch)
 
     return loss_sum, total_accuracy, num_samples_seen_epoch
 
