@@ -595,7 +595,7 @@ if __name__ == '__main__':
                 **mask_sampler_kwargs,
                 min_masking_ratio=args.uniform_masked_amount_min_masking_ratio)
         elif args.mask_sampling_strategy == 'contiguous_zones':
-            mask_sampler = ContinousZonesSequenceMask(
+            mask_sampler = ContiguousZonesSequenceMask(
                 **mask_sampler_kwargs)
 
     if validation_loader is not None:
