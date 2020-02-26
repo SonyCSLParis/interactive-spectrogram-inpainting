@@ -43,12 +43,12 @@ if torch.cuda.is_available():
 
 def plot_codes(target_codemaps: torch.LongTensor,
                predicted_codemaps: torch.LongTensor,
-               binary_success_maps: torch.LongTensor,
+               success_maps: torch.FloatTensor,
                codes_dictionary_dim: int,
                cmap='viridis', plots_per_row: int = 12) -> None:
     assert (len(target_codemaps)
             == len(predicted_codemaps)
-            == len(binary_success_maps))
+            == len(success_maps))
 
     num_maps = len(target_codemaps)
     num_groups = 3
@@ -77,7 +77,7 @@ def plot_codes(target_codemaps: torch.LongTensor,
 
     # print success maps
     codemap_group_index = 2
-    for map_index, success_map in enumerate(binary_success_maps):
+    for map_index, success_map in enumerate(success_maps):
         ax = get_ax(codemap_group_index, map_index)
         ax.matshow(success_map.cpu().numpy(), vmin=0, vmax=1,
                    cmap='RdYlGn')
@@ -283,14 +283,26 @@ def run_model(args, epoch: int, loader: DataLoader, model: VQNSynthTransformer,
 
         if tensorboard_writer is not None and batch_index % plot_frequency_batch == 0:
             num_plot_samples = min(batch_size, 10)
-            targets_plot_subset = target[:num_plot_samples]
-            preds_plot_subset = pred[:num_plot_samples]
-            success_maps_plot_subset = (targets_plot_subset
-                                        == preds_plot_subset).long()
+
+            correct_bool = (target == pred)
+            correct_float = correct_bool.float()
+
+            if model.self_conditional_model:
+                # represent success map with four values/colors using the mask
+                # shades describe the following cases
+                # [wrong masked, wrong unmasked, correct unmasked, correct masked]
+                unmasked_map = torch.logical_not(time_frequency_mask)
+                # correct, masked values
+                correct_float.masked_fill_(unmasked_map * correct_bool, 0.8)
+                # incorrect, masked values
+                correct_float.masked_fill_(
+                    unmasked_map * torch.logical_not(correct_bool),
+                    0.2)
+
             # one row of input codemaps and one row of model-output codemaps
-            fig_codes, _ = plot_codes(targets_plot_subset,
-                                      preds_plot_subset,
-                                      success_maps_plot_subset,
+            fig_codes, _ = plot_codes(target[:num_plot_samples],
+                                      pred[:num_plot_samples],
+                                      correct_float[:num_plot_samples],
                                       num_codes_dictionary,
                                       plots_per_row=num_plot_samples)
             if run_type == 'validation':
