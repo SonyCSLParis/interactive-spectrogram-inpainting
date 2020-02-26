@@ -278,7 +278,7 @@ def run_model(args, epoch: int, loader: DataLoader, model: VQNSynthTransformer,
                 tensorboard_writer.add_scalar(
                     (f'code_prediction-{run_type}_{args.hier}-{num_training_samples}'
                      '_training_samples/satisfied_constraints_ratio'),
-                    satisfied_constraints_batch.mean(),
+                    satisfied_constraints_batch / top.numel(),
                     num_samples_seen_total)
 
         if tensorboard_writer is not None and batch_index % plot_frequency_batch == 0:
