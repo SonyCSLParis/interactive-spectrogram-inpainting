@@ -215,6 +215,7 @@ if __name__ == '__main__':
     parser.add_argument('--lr', type=float, default=3e-4)
     parser.add_argument('--latent_loss_weight', type=float, default=0.25)
     parser.add_argument('--dataset', type=str, choices=['nsynth', 'imagenet'])
+    parser.add_argument('--disable_mel_scale', action='store_true')
     parser.add_argument('--dataset_type', choices=['hdf5', 'wav'],
                         default='wav')
     parser.add_argument('--normalize_input_images', action='store_true')
@@ -319,9 +320,11 @@ if __name__ == '__main__':
             valid_pitch_range = [24, 84]
             # converts wavforms to spectrograms on-the-fly on GPU
             from functools import partial
-            dataloader_class = partial(WavToSpectrogramDataLoader,
-                                       device=device,
-                                       n_fft=N_FFT, hop_length=HOP_LENGTH)
+            dataloader_class = partial(
+                WavToSpectrogramDataLoader,
+                device=device,
+                n_fft=N_FFT, hop_length=HOP_LENGTH,
+                use_mel_scale=not args.disable_mel_scale)
 
             if args.output_spectrogram_threshold is not None:
                 output_transform = make_masked_phase_transform(
