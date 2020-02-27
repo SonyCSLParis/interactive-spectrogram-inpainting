@@ -25,7 +25,7 @@ from torch.utils.tensorboard.writer import SummaryWriter
 from dataset import LMDBDataset
 from pixelsnail import PixelSNAIL, LabelSmoothingLoss
 from transformer import VQNSynthTransformer
-from scheduler import CycleScheduler
+from scheduler import CycleScheduler, get_cosine_schedule_with_warmup
 from sequence_mask import (SequenceMask, BernoulliSequenceMask,
                            UniformProbabilityBernoulliSequenceMask,
                            UniformMaskedAmountSequenceMask,
@@ -259,7 +259,7 @@ def run_model(args, epoch: int, loader: DataLoader, model: VQNSynthTransformer,
         status_bar.set_description_str(
             (
                 f'{run_type}, epoch: {epoch + 1}; avg loss: {loss_sum / num_samples_seen_epoch:.5f}; '
-                f'acc: {accuracy:.5f}; lr: {lr:.5f}'
+                f'acc: {accuracy:.5f}; lr: {lr:.8f}'
             )
         )
 
@@ -366,6 +366,7 @@ if __name__ == '__main__':
     parser.add_argument('--optimizer', type=str,
                         choices=['adam', 'radam'],
                         default='adam')
+    parser.add_argument('--optimizer_eps', type=float, default=1e-8)
     parser.add_argument('--batch_size', type=int, default=32)
     parser.add_argument('--hier', type=str, default='top')
     parser.add_argument('--lr', type=float, default=3e-4)
@@ -398,7 +399,8 @@ if __name__ == '__main__':
     parser.add_argument('--dropout', type=float, default=0.1)
     parser.add_argument('--predict_frequencies_first', action='store_true')
     parser.add_argument('--amp', type=str, default='O0')
-    parser.add_argument('--sched', type=str)
+    parser.add_argument('--scheduler', type=str)
+    parser.add_argument('--num_warmup_steps', type=int, default=2000)
     parser.add_argument('--initial_weights_path', type=str,
                         help=("Restart training from the weights "
                               "contained in the provided PyTorch checkpoint"))
@@ -583,7 +585,8 @@ if __name__ == '__main__':
         optimizer_class = torch.optim.Adam
     elif args.optimizer == 'radam':
         optimizer_class = RAdam
-    optimizer = optimizer_class(model.parameters(), lr=args.lr)
+    optimizer = optimizer_class(model.parameters(), lr=args.lr,
+                                eps=args.optimizer_eps)
 
     if amp is not None:
         model, optimizer = amp.initialize(model, optimizer, opt_level=args.amp)
@@ -608,10 +611,15 @@ if __name__ == '__main__':
         tensorboard_writer = SummaryWriter(tensorboard_dir_path)
 
     scheduler = None
-    if args.sched == 'cycle':
+    if args.scheduler == 'cycle':
         scheduler = CycleScheduler(
             optimizer, args.lr, n_iter=len(loader) * args.num_epochs,
             momentum=None
+        )
+    elif args.scheduler == 'warmup_cosine_annealing':
+        scheduler = get_cosine_schedule_with_warmup(
+            optimizer, num_warmup_steps=args.num_warmup_steps,
+            num_training_steps=len(loader) * args.num_epochs
         )
 
     num_classes = model.n_class
