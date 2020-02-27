@@ -78,9 +78,9 @@ def train(epoch: int, loader: DataLoader, model: nn.Module,
         loss = recon_loss + latent_loss_weight * latent_loss
         loss.backward()
 
+        optimizer.step()
         if scheduler is not None:
             scheduler.step()
-        optimizer.step()
 
         batch_size = img.shape[0]
         mse_batch = recon_loss.item()

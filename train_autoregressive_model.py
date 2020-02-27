@@ -234,9 +234,9 @@ def run_model(args, epoch: int, loader: DataLoader, model: VQNSynthTransformer,
         if is_training:
             loss.backward()
 
+            optimizer.step()
             if scheduler is not None:
                 scheduler.step()
-            optimizer.step()
 
         _, pred = time_frequency_logits_out.max(1)
         correct = (pred == target).float()
