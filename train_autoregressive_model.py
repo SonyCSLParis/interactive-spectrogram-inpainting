@@ -118,7 +118,8 @@ def run_model(args, epoch: int, loader: DataLoader, model: VQNSynthTransformer,
               mask_sampler: Optional[SequenceMask] = None,
               plot_frequency_batch: int = 200,
               num_codes_dictionary: int = None,
-              drop_loss_half_DEBUG: bool = False):
+              drop_loss_half_DEBUG: bool = False,
+              train_num_steps_sequences_DEBUG: Optional[int] = None):
     run_type = 'training' if is_training else 'validation'
     status_bar = tqdm(total=0, position=0, bar_format='{desc}')
     tqdm_loader = tqdm(loader, position=1)
@@ -224,12 +225,24 @@ def run_model(args, epoch: int, loader: DataLoader, model: VQNSynthTransformer,
         time_frequency_logits_out = model.to_time_frequency_map(
             logits_sequence_out, kind=kind, permute_output_as_logits=True)
 
-        if not drop_loss_half_DEBUG:
-            loss = criterion(time_frequency_logits_out, target)
-        else:
+        if train_num_steps_sequences_DEBUG:
+            time_frequency_map_out = time_frequency_logits_out.permute(
+                0, 2, 3, 1)
+            logits_sequence_out = model.flatten_map(
+                time_frequency_map_out, kind=kind).transpose(1, 2)
+            target_sequence = model.flatten_map(
+                target, kind=kind)
+
+            loss = criterion(
+                logits_sequence_out[..., :train_num_steps_sequences_DEBUG],
+                target_sequence[..., :train_num_steps_sequences_DEBUG]
+                )
+        elif drop_loss_half_DEBUG:
             loss = criterion(
                 time_frequency_logits_out[..., :model.shape[1]//2],
                 target[..., :model.shape[1]//2])
+        else:
+            loss = criterion(time_frequency_logits_out, target)
 
         if is_training:
             loss.backward()
@@ -431,6 +444,9 @@ if __name__ == '__main__':
         help="""If set, ignore the second half (in time) of the codemaps,
         which often contains a lot of silence-mapped symbols and could lead
         the training to fail""")
+    parser.add_argument(
+        '--train_num_steps_sequences_DEBUG', type=int,
+        help="If set, restrict training sequences to their first `n` steps")
 
     args = parser.parse_args()
 
@@ -676,7 +692,8 @@ if __name__ == '__main__':
                       mask_sampler=mask_sampler,
                       num_codes_dictionary=model.n_class,
                       plot_frequency_batch=args.plot_frequency_batch,
-                      drop_loss_half_DEBUG=args.drop_loss_half_DEBUG)
+                      drop_loss_half_DEBUG=args.drop_loss_half_DEBUG,
+                      train_num_steps_sequences_DEBUG=args.train_num_steps_sequences_DEBUG)
 
             checkpoint_dict = {
                 'command_line_arguments': args.__dict__,
@@ -694,7 +711,8 @@ if __name__ == '__main__':
                         scheduler, device, criterion,
                         tensorboard_writer=tensorboard_writer, is_training=False,
                         num_codes_dictionary=model.n_class,
-                        mask_sampler=mask_sampler)
+                        mask_sampler=mask_sampler,
+                        train_num_steps_sequences_DEBUG=args.train_num_steps_sequences_DEBUG)
                 if total_validation_loss < best_validation_loss:
                     best_validation_loss = total_validation_loss
 
