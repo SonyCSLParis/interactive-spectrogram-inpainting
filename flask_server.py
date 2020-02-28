@@ -59,6 +59,7 @@ DEVICE = None
 SOUND_DURATION_S = None
 USE_MEL_FREQUENCY = None
 SPECTROGRAMS_UPSAMPLING_FACTOR = None
+USE_LOCAL_CONDITIONING = None
 
 _num_iterations = None
 _sequence_length_ticks = None
@@ -150,7 +151,10 @@ def make_spectrogram_image(spectrogram: torch.Tensor,
 @click.option('--n_fft', default=2048)
 @click.option('--hop_length', default=512)
 @click.option('--spectrograms_upsampling_factor', default=4)
-@click.option('--use_mel_frequency', type=int, default=True)
+@click.option('--use_mel_frequency/--disable_mel_frequency',
+              default=True)
+@click.option('--use_local_conditioning/--ignore_local_conditioning',
+              default=True)
 @click.option('--device', type=click.Choice(['cuda', 'cpu'],
                                             case_sensitive=False),
               default='cuda')
@@ -170,6 +174,7 @@ def init_app(vqvae_parameters_path,
              hop_length,
              spectrograms_upsampling_factor,
              use_mel_frequency,
+             use_local_conditioning,
              device,
              port,
              ):
@@ -179,12 +184,14 @@ def init_app(vqvae_parameters_path,
     global USE_MEL_FREQUENCY
     global DEVICE
     global SPECTROGRAMS_UPSAMPLING_FACTOR
+    global USE_LOCAL_CONDITIONING
     FS_HZ = fs_hz
     HOP_LENGTH = hop_length
     SOUND_DURATION_S = sound_duration_s
     DEVICE = device
     USE_MEL_FREQUENCY = use_mel_frequency
     SPECTROGRAMS_UPSAMPLING_FACTOR = spectrograms_upsampling_factor
+    USE_LOCAL_CONDITIONING = use_local_conditioning
 
     global vqvae
     print("Load VQ-VAE")
@@ -407,6 +414,7 @@ def timerange_change():
     global transformer_bottom
     global label_encoders_per_modality
     global DEVICE
+    global USE_LOCAL_CONDITIONING
 
     layer = str(request.args.get('layer'))
     temperature = float(request.args.get('temperature'))
@@ -423,7 +431,8 @@ def timerange_change():
         'pitch': global_pitch,
         'instrument_family_str': global_instrument_family_str
     }
-    if not transformer_bottom.local_class_conditioning:
+    if (not USE_LOCAL_CONDITIONING
+            or not transformer_bottom.local_class_conditioning):
         class_conditioning_bottom = global_class_conditioning.copy()
         class_conditioning_tensors_bottom = make_conditioning_tensors(
             class_conditioning_bottom,
@@ -431,16 +440,6 @@ def timerange_change():
         class_conditioning_bottom_map = None
     else:
         class_conditioning_bottom = class_conditioning_tensors_bottom = None
-
-    if not transformer_top.local_class_conditioning:
-        # try to retrieve conditioning from http arguments
-        class_conditioning_top = global_class_conditioning.copy()
-        class_conditioning_tensors_top = make_conditioning_tensors(
-            class_conditioning_top,
-            label_encoders_per_modality)
-        class_conditioning_top_map = None
-    else:
-        class_conditioning_top = class_conditioning_tensors_top = None
 
     top_code, bottom_code = parse_codes(request)
     generation_mask_batched = parse_mask(request).to(DEVICE)
@@ -464,6 +463,17 @@ def timerange_change():
                                  input_conditioning_top,
                                  input_conditioning_bottom)
     elif layer == 'top':
+        if (not USE_LOCAL_CONDITIONING
+                or not transformer_top.local_class_conditioning):
+            # try to retrieve conditioning from http arguments
+            class_conditioning_top = global_class_conditioning.copy()
+            class_conditioning_tensors_top = make_conditioning_tensors(
+                class_conditioning_top,
+                label_encoders_per_modality)
+            class_conditioning_top_map = None
+        else:
+            class_conditioning_top = class_conditioning_tensors_top = None
+
         if transformer_top.self_conditional_model:
             condition = top_code
         else:
