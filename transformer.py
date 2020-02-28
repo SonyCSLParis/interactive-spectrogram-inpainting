@@ -62,6 +62,7 @@ class VQNSynthTransformer(nn.Module):
         class_conditioning_embedding_dim_per_modality: Optional[Mapping[str, int]] = None,
         class_conditioning_prepend_to_dummy_input: bool = False,
         local_class_conditioning: bool = False,
+        positional_class_conditioning: bool = False,
         add_mask_token_to_symbols: bool = False,
         conditional_model: bool = False,
         self_conditional_model: bool = False,
@@ -85,6 +86,8 @@ class VQNSynthTransformer(nn.Module):
             assert (condition_shape is None or condition_shape == shape)
             assert add_mask_token_to_symbols
 
+        assert not (local_class_conditioning and positional_class_conditioning)
+
         self.conditional_model = conditional_model
         if self.conditional_model:
             assert condition_shape is not None
@@ -98,6 +101,7 @@ class VQNSynthTransformer(nn.Module):
         if self.self_conditional_model:
             self.condition_shape = self.shape.copy()
         self.local_class_conditioning = local_class_conditioning
+        self.positional_class_conditioning = positional_class_conditioning
 
         self.n_class = n_class
         self.add_mask_token_to_symbols = add_mask_token_to_symbols
@@ -122,6 +126,7 @@ class VQNSynthTransformer(nn.Module):
         self.predict_low_frequencies_first = predict_low_frequencies_first
         self.d_model = d_model
         self.embeddings_dim = embeddings_dim
+
         # ensure an even value
         self.positional_embeddings_dim = 2 * (positional_embeddings_dim // 2)
 
@@ -153,6 +158,14 @@ class VQNSynthTransformer(nn.Module):
             self.n_class_out = self.n_class
         else:
             self.n_class_out = self.n_class_in = self.n_class
+
+        self.class_conditioning_num_modalities = 0
+        self.class_conditioning_total_dim = 0
+        if self.class_conditioning_num_classes_per_modality is not None:
+            self.class_conditioning_num_modalities = len(
+                self.class_conditioning_embedding_dim_per_modality.values())
+            self.class_conditioning_total_dim = sum(
+                self.class_conditioning_embedding_dim_per_modality.values())
 
         if self.conditional_model:
             self.source_frequencies, self.source_duration = (
@@ -252,16 +265,22 @@ class VQNSynthTransformer(nn.Module):
         if self.embeddings_dim is None:
             self.embeddings_dim = self.d_model-self.positional_embeddings_dim
 
-        self.source_embeddings_linear = nn.Linear(
-            self.embeddings_dim,
-            self.d_model-self.positional_embeddings_dim)
         self.source_embed = torch.nn.Embedding(self.n_class_in,
                                                self.embeddings_dim)
+
+        embeddings_effective_dim = (self.d_model
+                                    - self.positional_embeddings_dim)
+        if self.positional_class_conditioning:
+            embeddings_effective_dim -= self.class_conditioning_total_dim
+        self.source_embeddings_linear = nn.Linear(
+            self.embeddings_dim,
+            embeddings_effective_dim
+            )
 
         if self.conditional_model:
             self.target_embeddings_linear = nn.Linear(
                 self.embeddings_dim,
-                self.d_model-self.positional_embeddings_dim)
+                embeddings_effective_dim)
 
             self.target_embed = torch.nn.Embedding(self.n_class_out,
                                                    self.embeddings_dim)
@@ -270,18 +289,11 @@ class VQNSynthTransformer(nn.Module):
         self.project_transformer_outputs_to_logits = (
             nn.Linear(self.d_model, self.n_class_out))
 
-        self.class_conditioning_num_modalities = 0
-        self.class_conditioning_total_dim = 0
         self.class_conditioning_embedding_layers = nn.ModuleDict()
         self.class_conditioning_class_to_index_per_modality = {}
         self.class_conditioning_start_positions_per_modality = {}
 
         if self.class_conditioning_num_classes_per_modality is not None:
-            self.class_conditioning_num_modalities = len(
-                self.class_conditioning_embedding_dim_per_modality.values())
-            self.class_conditioning_total_dim = sum(
-                self.class_conditioning_embedding_dim_per_modality.values())
-
             # initialize class conditioning embedding layers
             for (modality_name, modality_num_classes), modality_embedding_dim in zip(
                     self.class_conditioning_num_classes_per_modality.items(),
@@ -292,38 +304,44 @@ class VQNSynthTransformer(nn.Module):
                 )
 
             # initialize start positions for class conditioning in start symbol
-            if self.class_conditioning_prepend_to_dummy_input:
+            if self.positional_class_conditioning or self.class_conditioning_prepend_to_dummy_input:
                 # insert class conditioning at beginning of the start symbol
                 current_position = 0
-                direction = +1
+
+                for modality_name, modality_embedding_dim in (
+                        self.class_conditioning_embedding_dim_per_modality.items()):
+                    self.class_conditioning_start_positions_per_modality[modality_name] = (
+                        current_position
+                    )
+                    current_position = current_position + modality_embedding_dim
             else:
                 raise NotImplementedError
                 # insert class conditioning at end of the start symbol
                 current_position = self.d_model
-                direction = -1
 
-            for modality_name, modality_embedding_dim in (
-                    self.class_conditioning_embedding_dim_per_modality.items()):
-                self.class_conditioning_start_positions_per_modality[modality_name] = (
-                    current_position
-                )
-                current_position = current_position + direction*modality_embedding_dim
+                for modality_name, modality_embedding_dim in (
+                        self.class_conditioning_embedding_dim_per_modality.items()):
+                    current_position = current_position - modality_embedding_dim
+                    self.class_conditioning_start_positions_per_modality[modality_name] = (
+                        current_position
+                    )
 
             self.class_conditioning_total_dim_with_positions = (
                 self.class_conditioning_total_dim
                 + self.positional_embeddings_dim)
 
         self.source_start_symbol_dim = self.d_model
+        if self.positional_class_conditioning:
+            self.source_start_symbol_dim -= self.class_conditioning_total_dim
         # TODO reduce dimensionality of start symbol and use a linear layer to expand it
         self.source_start_symbol = nn.Parameter(
             torch.randn((1, 1, self.source_start_symbol_dim))
         )
 
         if self.conditional_model:
-            self.target_start_symbol_dim = (
-                self.d_model
-                # - self.class_conditioning_total_embedding_dim
-            )
+            self.target_start_symbol_dim = self.d_model
+            if self.positional_class_conditioning:
+                self.target_start_symbol_dim -= self.class_conditioning_total_dim
             self.target_start_symbol = nn.Parameter(
                 torch.randn((1, 1, self.target_start_symbol_dim))
             )
@@ -600,6 +618,13 @@ class VQNSynthTransformer(nn.Module):
             embedded_sequence, kind=kind, embedding_dim=embedding_dim
         )
 
+        if self.positional_class_conditioning:
+            embedded_sequence_with_positions = (
+                self.add_class_conditioning_to_sequence(
+                    embedded_sequence_with_positions,
+                    class_conditioning)
+            )
+
         prepared_sequence = self.maybe_add_start_symbol(
             embedded_sequence_with_positions, kind=kind,
             class_conditioning=class_conditioning, sequence_dim=1
@@ -643,6 +668,25 @@ class VQNSynthTransformer(nn.Module):
 
         return sequence_with_positions
 
+    def add_class_conditioning_to_sequence(
+            self, sequence_with_positions: torch.Tensor,
+            class_conditioning: Mapping[str, torch.Tensor]) -> torch.Tensor:
+        """Overwrite the end of the positional embeddings with the class"""
+        embeddings = torch.zeros(
+            (*sequence_with_positions.shape[:2],
+             self.class_conditioning_total_dim))
+        for condition_name, class_condition in class_conditioning.items():
+            modality_embeddings = (
+                self.class_conditioning_embedding_layers[
+                    condition_name](class_condition))
+            start_position = (
+                self.class_conditioning_start_positions_per_modality[
+                    condition_name])
+            embeddings[
+                :, :, start_position:start_position+modality_embeddings.shape[2]] = (
+                    modality_embeddings)
+        return torch.cat([sequence_with_positions, embeddings], dim=-1)
+
     def maybe_add_start_symbol(self, sequence_with_positions: torch.Tensor,
                                kind: str,
                                class_conditioning: Mapping[str, torch.Tensor],
@@ -669,15 +713,20 @@ class VQNSynthTransformer(nn.Module):
         start_symbol = start_symbol.repeat(batch_size, 1, 1)
 
         if not self.local_class_conditioning:
-            # add conditioning tensors to start-symbol
-            for condition_name, class_condition in class_conditioning.items():
-                embeddings = (
-                    self.class_conditioning_embedding_layers[
-                        condition_name](class_condition)).squeeze(1)
-                start_position = (
-                    self.class_conditioning_start_positions_per_modality[
-                        condition_name])
-                start_symbol[:, 0, start_position:start_position+embeddings.shape[1]] = embeddings
+            if self.positional_class_conditioning:
+                start_symbol = self.add_class_conditioning_to_sequence(
+                    start_symbol, class_conditioning
+                )
+            else:
+                # add conditioning tensors to start-symbol
+                for condition_name, class_condition in class_conditioning.items():
+                    embeddings = (
+                        self.class_conditioning_embedding_layers[
+                            condition_name](class_condition)).squeeze(1)
+                    start_position = (
+                        self.class_conditioning_start_positions_per_modality[
+                            condition_name])
+                    start_symbol[:, 0, start_position:start_position+embeddings.shape[1]] = embeddings
 
         sequence_with_start_symbol = torch.cat(
                 [start_symbol,

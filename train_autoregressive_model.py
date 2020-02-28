@@ -401,6 +401,7 @@ if __name__ == '__main__':
     parser.add_argument('--use_identity_memory_mask', action='store_true')
     parser.add_argument('--use_relative_transformer', action='store_true')
     parser.add_argument('--use_local_class_conditioning', action='store_true')
+    parser.add_argument('--positional_class_conditioning', action='store_true')
     parser.add_argument('--conditional_model_nhead', type=int, default=16)
     parser.add_argument('--conditional_model_num_encoder_layers', type=int,
                         default=6)
@@ -529,6 +530,7 @@ if __name__ == '__main__':
             add_mask_token_to_symbols=args.self_conditional_model,
             condition_shape=shape_top if args.self_conditional_model else None,
             local_class_conditioning=args.use_local_class_conditioning,
+            positional_class_conditioning=args.positional_class_conditioning,
 
             class_conditioning_num_classes_per_modality=(
                 class_conditioning_num_classes_per_modality),
@@ -575,6 +577,8 @@ if __name__ == '__main__':
             conditional_model_num_decoder_layers=(
                 args.conditional_model_num_decoder_layers),
             use_identity_memory_mask=args.use_identity_memory_mask,
+            local_class_conditioning=args.use_local_class_conditioning,
+            positional_class_conditioning=args.positional_class_conditioning,
 
             class_conditioning_num_classes_per_modality=(
                 class_conditioning_num_classes_per_modality),
