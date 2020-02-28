@@ -22,7 +22,7 @@ from vqvae import VQVAE, InferenceVQVAE
 from pixelsnail import PixelSNAIL
 from transformer import VQNSynthTransformer
 from GANsynth_pytorch.pytorch_nsynth_lib.nsynth import (
-    wavfile_to_melspec_and_IF)
+    wavfile_to_spec_and_IF)
 
 if torch.cuda.is_available():
     torch.set_default_tensor_type(torch.cuda.FloatTensor)
@@ -399,7 +399,7 @@ if __name__ == '__main__':
     with torch.no_grad():
         initial_code = None
         if args.condition_top_audio_path is not None:
-            condition_mel_spec_and_IF = wavfile_to_melspec_and_IF(
+            condition_mel_spec_and_IF = wavfile_to_spec_and_IF(
                 args.condition_top_audio_path)
 
             (_, _, _, condition_code_top, condition_code_bottom,
@@ -409,7 +409,7 @@ if __name__ == '__main__':
             top_code = condition_code_top.repeat(args.batch_size, 1, 1)
             initial_code = condition_code_bottom.repeat(args.batch_size, 1, 1)
         elif args.constraint_top_audio_path is not None:
-            constraint_mel_spec_and_IF = wavfile_to_melspec_and_IF(
+            constraint_mel_spec_and_IF = wavfile_to_spec_and_IF(
                 args.constraint_top_audio_path)
 
             (_, _, _, constraint_code_top, *_) = model_vqvae.encode(

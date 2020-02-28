@@ -4,14 +4,12 @@ from sample import (sample_model, make_conditioning_tensors,
                     ConditioningMap, make_conditioning_map)
 from dataset import LMDBDataset
 from GANsynth_pytorch.pytorch_nsynth_lib.nsynth import (
-    wavfile_to_melspec_and_IF)
+    wavfile_to_spec_and_IF)
 
 import soundfile
-import math
-from typing import List, Optional, Union, Tuple, Mapping
+from typing import Union, Tuple, Mapping
 import click
 import tempfile
-import zipfile
 import os
 import pathlib
 import matplotlib as mpl
@@ -372,12 +370,12 @@ def audio_to_codes():
 
     with tempfile.NamedTemporaryFile(
             'w+b', suffix=request.files['audio'].filename) as f:
-        audio_file = request.files['audio'].save(f)
-        mel_spec_and_IF = wavfile_to_melspec_and_IF(
+        request.files['audio'].save(f)
+        spec_and_IF = wavfile_to_spec_and_IF(
             f.name, FS_HZ, duration_s=SOUND_DURATION_S
         ).to(DEVICE)
 
-    _, _, _, top_code, bottom_code, *_ = vqvae.encode(mel_spec_and_IF)
+    _, _, _, top_code, bottom_code, *_ = vqvae.encode(spec_and_IF)
 
     class_conditioning_top_map = {
         modality: make_matrix(transformer_top.shape,
