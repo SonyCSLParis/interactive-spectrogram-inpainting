@@ -389,6 +389,7 @@ if __name__ == '__main__':
     parser.add_argument('--n_res_channel', type=int, default=256)
     parser.add_argument('--n_out_res_block', type=int, default=0)
     parser.add_argument('--n_cond_res_block', type=int, default=3)
+    parser.add_argument('--positional_embeddings_dim', type=int, default=16)
     parser.add_argument('--classes_for_conditioning', type=str,
                         nargs='*', default=[])
     parser.add_argument('--class_conditioning_embedding_dim_per_modality',
@@ -521,6 +522,7 @@ if __name__ == '__main__':
             res_channel=args.n_res_channel,
             dropout=args.dropout,
             n_out_res_block=args.n_out_res_block,
+            positional_embeddings_dim=args.positional_embeddings_dim,
 
             use_relative_transformer=args.use_relative_transformer,
             predict_frequencies_first=args.predict_frequencies_first,
@@ -564,6 +566,7 @@ if __name__ == '__main__':
             dropout=args.dropout,
             n_cond_res_block=args.n_cond_res_block,
             cond_res_channel=args.n_res_channel,
+            positional_embeddings_dim=args.positional_embeddings_dim,
 
             use_relative_transformer=args.use_relative_transformer,
             predict_frequencies_first=args.predict_frequencies_first,
