@@ -326,9 +326,9 @@ class VQNSynthTransformer(nn.Module):
                         current_position
                     )
 
-            self.class_conditioning_total_dim_with_positions = (
-                self.class_conditioning_total_dim
-                + self.positional_embeddings_dim)
+        self.class_conditioning_total_dim_with_positions = (
+            self.class_conditioning_total_dim
+            + self.positional_embeddings_dim)
 
         self.source_start_symbol_dim = self.d_model
         if self.positional_class_conditioning:

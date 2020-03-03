@@ -216,7 +216,7 @@ def sample_model(model: PixelSNAIL, device: Union[torch.device, str],
         embedded_sample = model.embed_data(sample, kind)
         if i+1 < sequence_duration:
             # translate to account for the added start_symbol!
-            input_sequence[:, i+1, :-model.positional_embeddings_dim] = (
+            input_sequence[:, i+1, :-model.class_conditioning_total_dim_with_positions] = (
                 embedded_sample)
 
     codemap = model.to_time_frequency_map(codemap_as_sequence,
