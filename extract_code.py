@@ -250,7 +250,7 @@ if __name__ == '__main__':
                 if args.dataset == 'nsynth':
                     def make_audio(mag_and_IF_batch: torch.Tensor) -> np.ndarray:
                         audio_batch = inference_vqvae.mag_and_IF_to_audio(
-                            mag_and_IF_batch, use_mel_frequency=True)
+                            mag_and_IF_batch)
                         audio_mono_concatenated = audio_batch.flatten().cpu().numpy()
                         return audio_mono_concatenated
 

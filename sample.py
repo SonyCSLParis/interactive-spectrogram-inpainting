@@ -308,7 +308,6 @@ if __name__ == '__main__':
     parser.add_argument('--temperature', type=float, default=1.0)
     parser.add_argument('--hop_length', type=int, default=512)
     parser.add_argument('--n_fft', type=int, default=2048)
-    parser.add_argument('--use_mel_frequency', type=int, default=True)
     parser.add_argument('--sample_rate_hz', type=int, default=16000)
     parser.add_argument('--condition_top_audio_path', type=str)
     parser.add_argument('--constraint_top_audio_path', type=str)
@@ -471,8 +470,7 @@ if __name__ == '__main__':
     def make_audio(mag_and_IF_batch: torch.Tensor,
                    condition_audio: Optional[np.ndarray],
                    normalize: bool = False) -> np.ndarray:
-        audio_batch = inference_vqvae.mag_and_IF_to_audio(
-            mag_and_IF_batch, use_mel_frequency=args.use_mel_frequency)
+        audio_batch = inference_vqvae.mag_and_IF_to_audio(mag_and_IF_batch)
 
         if normalize:
             normalized_audio_batch = (

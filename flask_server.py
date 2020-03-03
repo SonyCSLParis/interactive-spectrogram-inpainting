@@ -57,7 +57,6 @@ FS_HZ = None
 HOP_LENGTH = None
 DEVICE = None
 SOUND_DURATION_S = None
-USE_MEL_FREQUENCY = None
 SPECTROGRAMS_UPSAMPLING_FACTOR = None
 USE_LOCAL_CONDITIONING = None
 
@@ -151,8 +150,6 @@ def make_spectrogram_image(spectrogram: torch.Tensor,
 @click.option('--n_fft', default=2048)
 @click.option('--hop_length', default=512)
 @click.option('--spectrograms_upsampling_factor', default=4)
-@click.option('--use_mel_frequency/--disable_mel_frequency',
-              default=True)
 @click.option('--use_local_conditioning/--ignore_local_conditioning',
               default=True)
 @click.option('--device', type=click.Choice(['cuda', 'cpu'],
@@ -173,7 +170,6 @@ def init_app(vqvae_parameters_path,
              n_fft,
              hop_length,
              spectrograms_upsampling_factor,
-             use_mel_frequency,
              use_local_conditioning,
              device,
              port,
@@ -181,7 +177,6 @@ def init_app(vqvae_parameters_path,
     global FS_HZ
     global HOP_LENGTH
     global SOUND_DURATION_S
-    global USE_MEL_FREQUENCY
     global DEVICE
     global SPECTROGRAMS_UPSAMPLING_FACTOR
     global USE_LOCAL_CONDITIONING
@@ -189,7 +184,6 @@ def init_app(vqvae_parameters_path,
     HOP_LENGTH = hop_length
     SOUND_DURATION_S = sound_duration_s
     DEVICE = device
-    USE_MEL_FREQUENCY = use_mel_frequency
     SPECTROGRAMS_UPSAMPLING_FACTOR = spectrograms_upsampling_factor
     USE_LOCAL_CONDITIONING = use_local_conditioning
 
@@ -637,7 +631,6 @@ def make_response(top_code: torch.Tensor,
     global transformer_top
     global transformer_bottom
     global inference_vqvae
-    global USE_MEL_FREQUENCY
 
     # flatten codes for sending as lists
     top_code_flattened = transformer_top.flatten_map(
@@ -662,9 +655,7 @@ def codes_to_audio_response():
                                                  bottom_code)
 
     # convert to audio and write to file
-    audio = inference_vqvae.mag_and_IF_to_audio(
-        logmelspectrogram_and_IF,
-        use_mel_frequency=USE_MEL_FREQUENCY)[0]
+    audio = inference_vqvae.mag_and_IF_to_audio(logmelspectrogram_and_IF)[0]
     audio_path = write_audio_to_file(audio)
 
     return flask.send_file(audio_path, mimetype="audio/wav",

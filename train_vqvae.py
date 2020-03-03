@@ -25,6 +25,8 @@ from GANsynth_pytorch.pytorch_nsynth_lib.nsynth import (
 from GANsynth_pytorch.normalizer import DataNormalizer
 import GANsynth_pytorch.utils.plots as gansynthplots
 from GANsynth_pytorch.spectrograms_helper import SPEC_THRESHOLD
+from GANsynth_pytorch.spec_ops import (_MEL_BREAK_FREQUENCY_HERTZ,
+                                       _MEL_HIGH_FREQUENCY_Q)
 
 import matplotlib as mpl
 # use matplotlib without an X server
@@ -216,6 +218,14 @@ if __name__ == '__main__':
     parser.add_argument('--latent_loss_weight', type=float, default=0.25)
     parser.add_argument('--dataset', type=str, choices=['nsynth', 'imagenet'])
     parser.add_argument('--disable_mel_scale', action='store_true')
+    parser.add_argument('--mel_scale_lower_edge_hertz', type=float,
+                        default=0.0)
+    parser.add_argument('--mel_scale_upper_edge_hertz', type=float,
+                        default=16000/2.0)
+    parser.add_argument('--mel_scale_break_frequency_hertz', type=float,
+                        default=_MEL_BREAK_FREQUENCY_HERTZ)
+    parser.add_argument('--mel_scale_high_frequency_q', type=float,
+                        default=_MEL_HIGH_FREQUENCY_Q)
     parser.add_argument('--dataset_type', choices=['hdf5', 'wav'],
                         default='wav')
     parser.add_argument('--normalize_input_images', action='store_true')
@@ -324,7 +334,11 @@ if __name__ == '__main__':
                 WavToSpectrogramDataLoader,
                 device=device,
                 n_fft=N_FFT, hop_length=HOP_LENGTH,
-                use_mel_scale=not args.disable_mel_scale)
+                use_mel_scale=not args.disable_mel_scale,
+                lower_edge_hertz=args.mel_scale_lower_edge_hertz,
+                upper_edge_hertz=args.mel_scale_upper_edge_hertz,
+                mel_break_frequency_hertz=args.mel_scale_break_frequency_hertz,
+                mel_high_frequency_q=args.mel_scale_high_frequency_q)
 
             if args.output_spectrogram_threshold is not None:
                 output_transform = make_masked_phase_transform(
@@ -427,7 +441,16 @@ if __name__ == '__main__':
                         'output_spectrogram_threshold': (
                             args.output_spectrogram_threshold),
                         'output_spectrogram_thresholded_value': (
-                            args.output_spectrogram_thresholded_value)
+                            args.output_spectrogram_thresholded_value),
+                        'use_mel_scale': not args.disable_mel_scale,
+                        'mel_scale_lower_edge_hertz': (
+                            args.mel_scale_lower_edge_hertz),
+                        'mel_scale_upper_edge_hertz': (
+                            args.mel_scale_upper_edge_hertz),
+                        'mel_scale_break_frequency_hertz': (
+                            args.mel_scale_break_frequency_hertz),
+                        'mel_scale_high_frequency_q': (
+                            args.mel_scale_high_frequency_q),
                         }
 
     def print_resolution_summary(loader, resolution_factors):
@@ -550,10 +573,9 @@ if __name__ == '__main__':
                 reconstructions = reconstructions[:3]
 
                 # add audio files to Tensorboards
-                samples_audio = inference_vqvae.mag_and_IF_to_audio(
-                    samples, use_mel_frequency=True)
+                samples_audio = inference_vqvae.mag_and_IF_to_audio(samples)
                 reconstructions_audio = inference_vqvae.mag_and_IF_to_audio(
-                    reconstructions, use_mel_frequency=True)
+                    reconstructions)
                 tensorboard_writer.add_audio('Original (end of epoch, validation data)',
                                              samples_audio.flatten(),
                                              epoch_index)
