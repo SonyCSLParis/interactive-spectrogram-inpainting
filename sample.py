@@ -203,6 +203,9 @@ def sample_model(model: PixelSNAIL, device: Union[torch.device, str],
                        .squeeze(channel_dim)
                        )
 
+    if model.self_conditional_model:
+        condition = codemap
+
     sequence_duration = codemap_size[0] * codemap_size[1]
     source_sequence, target_sequence = model.to_sequences(
         codemap, condition,
@@ -257,6 +260,9 @@ def sample_model(model: PixelSNAIL, device: Union[torch.device, str],
             # translate to account for the added start_symbol!
             input_sequence[:, i+1, :-model.class_conditioning_total_dim_with_positions] = (
                 embedded_sample)
+            if model.self_conditional_model:
+                condition_sequence[:, i, :-model.class_conditioning_total_dim_with_positions] = (
+                    embedded_sample)
 
     codemap = model.to_time_frequency_map(codemap_as_sequence,
                                           kind=kind).long()
