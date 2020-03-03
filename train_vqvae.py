@@ -55,6 +55,8 @@ def train(epoch: int, loader: DataLoader, model: nn.Module,
           ) -> None:
     num_samples_in_dataset = len(loader.dataset)
 
+    parallel_model = nn.DataParallel(model).to(device)
+
     tqdm_loader = tqdm(loader, position=1)
     status_bar = tqdm(total=0, position=0, bar_format='{desc}')
 
@@ -67,13 +69,13 @@ def train(epoch: int, loader: DataLoader, model: nn.Module,
     num_samples_seen_epoch = 0
     num_samples_seen_total = epoch * num_samples_in_dataset
 
-    model.train()
+    parallel_model.train()
     for i, (img, _) in enumerate(tqdm_loader):
-        model.zero_grad()
+        parallel_model.zero_grad()
 
         img = img.to(device)
 
-        out, latent_loss, perplexity_t_mean, perplexity_b_mean, *_ = model(img)
+        out, latent_loss, perplexity_t_mean, perplexity_b_mean, *_ = parallel_model(img)
         recon_loss = criterion(out, img)
         latent_loss = latent_loss.mean()
         loss = recon_loss + latent_loss_weight * latent_loss
@@ -122,7 +124,7 @@ def train(epoch: int, loader: DataLoader, model: nn.Module,
                                           num_samples_seen_total)
 
         if enable_image_dumps and i % 100 == 0:
-            model.eval()
+            parallel_model.eval()
 
             sample = img[:image_dump_sample_size]
             sample_out = out[:image_dump_sample_size]
@@ -145,7 +147,7 @@ def train(epoch: int, loader: DataLoader, model: nn.Module,
                     # scale_each=True,
                 )
 
-            model.train()
+            parallel_model.train()
         if dry_run:
             break
 
@@ -468,7 +470,7 @@ if __name__ == '__main__':
                   **vqvae_parameters
                   )
 
-    model = nn.DataParallel(vqvae).to(device)
+    model = vqvae.to(device)
 
     start_epoch = 0
     if args.resume_training_from is not None:
@@ -477,9 +479,9 @@ if __name__ == '__main__':
         epoch_find_regex = '\d+\.pt'
         start_epoch = int(re.search(epoch_find_regex, checkpoint_path.name
                                     )[0][:3])
-        model.module.load_state_dict(torch.load(checkpoint_path,
-                                                map_location=device)
-                                     )
+        model.load_state_dict(torch.load(checkpoint_path,
+                                         map_location=device)
+                              )
 
     inference_vqvae = InferenceVQVAE(model, device,
                                      hop_length=HOP_LENGTH, n_fft=N_FFT)
@@ -530,7 +532,7 @@ if __name__ == '__main__':
                 checkpoint_filename = (f'vqvae_{dataset_name}_'
                                        f'{str(epoch_index + 1).zfill(3)}.pt')
                 torch.save(
-                        model.module.state_dict(),
+                        model.state_dict(),
                         CHECKPOINTS_DIR_PATH / checkpoint_filename
                 )
 
