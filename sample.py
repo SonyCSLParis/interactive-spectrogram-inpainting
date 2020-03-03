@@ -15,6 +15,7 @@ from sklearn.preprocessing import LabelEncoder
 import torch
 import torchaudio
 from torch import nn
+from torch.nn import functional as F
 from torchvision.utils import save_image
 
 from dataset import LMDBDataset
@@ -30,6 +31,38 @@ if torch.cuda.is_available():
 # use matplotlib without an X server
 # on desktop, this prevents matplotlib windows from popping around
 mpl.use('Agg')
+
+
+def top_k_top_p_filtering(logits, top_k=0, top_p=0.0, filter_value=-float('Inf')):
+    """ Filter a distribution of logits using top-k and/or nucleus (top-p) filtering
+        Args:
+            logits: logits distribution shape (batch size x sequence_duration x vocabulary size)
+            top_k > 0: keep only top k tokens with highest probability (top-k filtering).
+            top_p > 0.0: keep the top tokens with cumulative probability >= top_p (nucleus filtering).
+                Nucleus filtering is described in Holtzman et al. (http://arxiv.org/abs/1904.09751)
+        From: https://gist.github.com/thomwolf/1a5a29f6962089e871b94cbd09daf317
+    """
+    top_k = min(top_k, logits.size(-1))  # Safety check
+    if top_k > 0:
+        # Remove all tokens with a probability less than the last token of the top-k
+        indices_to_remove = logits < torch.topk(logits, top_k)[0][..., -1, None]
+        logits[indices_to_remove] = filter_value
+
+    if top_p > 0.0:
+        sorted_logits, sorted_indices = torch.sort(logits, descending=True)
+        cumulative_probs = torch.cumsum(F.softmax(sorted_logits, dim=-1), dim=-1)
+
+        # Remove tokens with cumulative probability above the threshold
+        sorted_indices_to_remove = cumulative_probs > top_p
+        # Shift the indices to the right to keep also the first token above the threshold
+        sorted_indices_to_remove[..., 1:] = sorted_indices_to_remove[..., :-1].clone()
+        sorted_indices_to_remove[..., 0] = 0
+
+        # scatter sorted tensors to original indexing
+        indices_to_remove = sorted_indices_to_remove.scatter(
+            dim=-1, index=sorted_indices, src=sorted_indices_to_remove)
+        logits[indices_to_remove] = filter_value
+    return logits
 
 
 def make_conditioning_tensors(
@@ -78,8 +111,6 @@ def make_conditioning_map(class_conditioning: Mapping[str, ConditioningMap],
                           label_encoders_per_conditioning: Mapping[
                               str, LabelEncoder],
                           ) -> Mapping[str, torch.Tensor]:
-    class_conditioning_tensors = {}
-
     def map_to_tensor(conditioning_map: ConditioningMap, modality: str):
         label_encoder = label_encoders_per_conditioning[modality]
 
@@ -106,6 +137,8 @@ def sample_model(model: PixelSNAIL, device: Union[torch.device, str],
                  initial_code: Optional[torch.Tensor] = None,
                  mask: Optional[torch.Tensor] = None,
                  local_class_conditioning_map: Optional[Mapping[str, Iterable[int]]] = None,
+                 top_k_sampling_k: int = 0,
+                 top_p_sampling_p: float = 0.0
                  ):
     """Generate a sample from the provided PixelSNAIL
 
@@ -207,9 +240,15 @@ def sample_model(model: PixelSNAIL, device: Union[torch.device, str],
             input_sequence, condition_sequence,
             class_condition_sequence)
 
+        # apply temperature and filter logits
+        logits_sequence_out = logits_sequence_out / temperature
+        logits_sequence_out = top_k_top_p_filtering(logits_sequence_out,
+                                                    top_k=top_k_sampling_k,
+                                                    top_p=top_p_sampling_p)
+
         next_step_probabilities = torch.softmax(
-            logits_sequence_out[:, i, :] / temperature,
-            1)
+            logits_sequence_out[:, i, :], dim=1)
+
         sample = torch.multinomial(next_step_probabilities, 1).squeeze(-1)
         codemap_as_sequence[:, i] = sample.long()
 
@@ -306,6 +345,8 @@ if __name__ == '__main__':
     # TODO(theis): change this, store label encoders inside the VQNSynthTransformer model class
     parser.add_argument('--database_path_for_label_encoders', type=str)
     parser.add_argument('--temperature', type=float, default=1.0)
+    parser.add_argument('--top_p_sampling_p', type=float, default=0.0)
+    parser.add_argument('--top_k_sampling_k', type=int, default=0)
     parser.add_argument('--hop_length', type=int, default=512)
     parser.add_argument('--n_fft', type=int, default=2048)
     parser.add_argument('--sample_rate_hz', type=int, default=16000)
@@ -419,7 +460,10 @@ if __name__ == '__main__':
                 model_top, device, batch_size=1, codemap_size=model_top.shape,
                 temperature=args.temperature,
                 constraint=constraint_code_top_restrained,
-                class_conditioning=class_conditioning_tensors_top)
+                class_conditioning=class_conditioning_tensors_top,
+                top_p_sampling_p=args.top_p_sampling_p,
+                top_k_sampling_k=args.top_k_sampling_k
+                )
 
             # repeat condition for the whole batch
             top_code = top_code_sample.repeat(args.batch_size, 1, 1)
@@ -430,7 +474,9 @@ if __name__ == '__main__':
             top_code_sample = sample_model(
                 model_top, device, batch_size_top, model_top.shape,
                 args.temperature,
-                class_conditioning=class_conditioning_tensors_top)
+                class_conditioning=class_conditioning_tensors_top,
+                top_p_sampling_p=args.top_p_sampling_p,
+                top_k_sampling_k=args.top_k_sampling_k)
             top_code = top_code_sample
 
             if args.keep_same_top:
@@ -441,7 +487,9 @@ if __name__ == '__main__':
             model_bottom, device, args.batch_size, model_bottom.shape,
             args.temperature, condition=top_code,
             class_conditioning=class_conditioning_tensors_bottom,
-            initial_code=initial_code
+            initial_code=initial_code,
+            top_p_sampling_p=args.top_p_sampling_p,
+            top_k_sampling_k=args.top_k_sampling_k
         )
 
         decoded_sample = model_vqvae.decode_code(top_code, bottom_sample)
