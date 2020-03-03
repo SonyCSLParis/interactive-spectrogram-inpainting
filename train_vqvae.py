@@ -25,8 +25,7 @@ from GANsynth_pytorch.pytorch_nsynth_lib.nsynth import (
 from GANsynth_pytorch.normalizer import DataNormalizer
 import GANsynth_pytorch.utils.plots as gansynthplots
 from GANsynth_pytorch.spectrograms_helper import SPEC_THRESHOLD
-from GANsynth_pytorch.spec_ops import (_MEL_BREAK_FREQUENCY_HERTZ,
-                                       _MEL_HIGH_FREQUENCY_Q)
+from GANsynth_pytorch.spec_ops import _MEL_BREAK_FREQUENCY_HERTZ
 
 import matplotlib as mpl
 # use matplotlib without an X server
@@ -224,8 +223,6 @@ if __name__ == '__main__':
                         default=16000/2.0)
     parser.add_argument('--mel_scale_break_frequency_hertz', type=float,
                         default=_MEL_BREAK_FREQUENCY_HERTZ)
-    parser.add_argument('--mel_scale_high_frequency_q', type=float,
-                        default=_MEL_HIGH_FREQUENCY_Q)
     parser.add_argument('--dataset_type', choices=['hdf5', 'wav'],
                         default='wav')
     parser.add_argument('--normalize_input_images', action='store_true')
@@ -337,8 +334,7 @@ if __name__ == '__main__':
                 use_mel_scale=not args.disable_mel_scale,
                 lower_edge_hertz=args.mel_scale_lower_edge_hertz,
                 upper_edge_hertz=args.mel_scale_upper_edge_hertz,
-                mel_break_frequency_hertz=args.mel_scale_break_frequency_hertz,
-                mel_high_frequency_q=args.mel_scale_high_frequency_q)
+                mel_break_frequency_hertz=args.mel_scale_break_frequency_hertz)
 
             if args.output_spectrogram_threshold is not None:
                 output_transform = make_masked_phase_transform(
@@ -448,9 +444,7 @@ if __name__ == '__main__':
                         'mel_scale_upper_edge_hertz': (
                             args.mel_scale_upper_edge_hertz),
                         'mel_scale_break_frequency_hertz': (
-                            args.mel_scale_break_frequency_hertz),
-                        'mel_scale_high_frequency_q': (
-                            args.mel_scale_high_frequency_q),
+                            args.mel_scale_break_frequency_hertz)
                         }
 
     def print_resolution_summary(loader, resolution_factors):

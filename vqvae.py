@@ -327,7 +327,6 @@ class VQVAE(nn.Module):
         mel_scale_upper_edge_hertz: float = 16000 / 2.0,
         mel_scale_break_frequency_hertz: float = (
             spec_ops._MEL_BREAK_FREQUENCY_HERTZ),
-        mel_scale_high_frequency_q: float = spec_ops._MEL_HIGH_FREQUENCY_Q,
     ):
         # store instantiation parameters
         self.in_channel = in_channel
@@ -357,7 +356,6 @@ class VQVAE(nn.Module):
             self.mel_scale_upper_edge_hertz = mel_scale_upper_edge_hertz
             self.mel_scale_break_frequency_hertz = (
                 mel_scale_break_frequency_hertz)
-            self.mel_scale_high_frequency_q = mel_scale_high_frequency_q
 
         self._instantiation_parameters = self.__dict__.copy()
 
@@ -564,8 +562,8 @@ class InferenceVQVAE(object):
                 GANsynth_pytorch.spectrograms_helper.mel_logmag_and_IF_to_audio,
                 lower_edge_hertz=self.vqvae.mel_scale_lower_edge_hertz,
                 upper_edge_hertz=self.vqvae.mel_scale_upper_edge_hertz,
-                mel_break_frequency_hertz=self.vqvae.mel_scale_break_frequency_hertz,
-                mel_high_frequency_q=self.vqvae.mel_scale_mel_high_frequency_q
+                mel_break_frequency_hertz=(
+                    self.vqvae.mel_scale_break_frequency_hertz),
                 )
         else:
             spec_to_audio = (GANsynth_pytorch.spectrograms_helper
