@@ -225,6 +225,8 @@ if __name__ == '__main__':
                         default=16000/2.0)
     parser.add_argument('--mel_scale_break_frequency_hertz', type=float,
                         default=_MEL_BREAK_FREQUENCY_HERTZ)
+    parser.add_argument('--mel_scale_expand_resolution_factor', type=float,
+                        default=1.5)
     parser.add_argument('--dataset_type', choices=['hdf5', 'wav'],
                         default='wav')
     parser.add_argument('--normalize_input_images', action='store_true')
@@ -336,7 +338,8 @@ if __name__ == '__main__':
                 use_mel_scale=not args.disable_mel_scale,
                 lower_edge_hertz=args.mel_scale_lower_edge_hertz,
                 upper_edge_hertz=args.mel_scale_upper_edge_hertz,
-                mel_break_frequency_hertz=args.mel_scale_break_frequency_hertz)
+                mel_break_frequency_hertz=args.mel_scale_break_frequency_hertz,
+                expand_resolution_factor=args.mel_scale_expand_resolution_factor)
 
             if args.output_spectrogram_threshold is not None:
                 output_transform = make_masked_phase_transform(
