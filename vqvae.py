@@ -385,6 +385,7 @@ class VQVAE(nn.Module):
         self.n_res_block = n_res_block
         self.num_residual_channels = num_residual_channels
         self.embed_dim = embed_dim
+        self.use_local_kernels = use_local_kernels
         self.num_embeddings = num_embeddings
         self.decay = decay
         self.groups = groups
