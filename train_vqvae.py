@@ -213,6 +213,7 @@ if __name__ == '__main__':
                         default={'top': 2, 'bottom': 2})
     parser.add_argument('--window_length', type=int, default=2048)
     parser.add_argument('--n_fft', type=int, default=2048)
+    parser.add_argument('--use_local_kernels', action='store_true')
     parser.add_argument('--hop_length', type=int, default=512)
     parser.add_argument('--num_embeddings', type=int, default=512)
     parser.add_argument('--num_hidden_channels', type=int, default=128)
@@ -453,7 +454,8 @@ if __name__ == '__main__':
                         'mel_scale_upper_edge_hertz': (
                             args.mel_scale_upper_edge_hertz),
                         'mel_scale_break_frequency_hertz': (
-                            args.mel_scale_break_frequency_hertz)
+                            args.mel_scale_break_frequency_hertz),
+                        'use_local_kernels': args.use_local_kernels
                         }
 
     def print_resolution_summary(loader, resolution_factors):
