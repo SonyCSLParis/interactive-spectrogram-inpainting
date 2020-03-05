@@ -211,6 +211,9 @@ if __name__ == '__main__':
     #                     choices=[2, 4, 8, 16])
     parser.add_argument('--resolution_factors', action=StoreDictKeyPair,
                         default={'top': 2, 'bottom': 2})
+    parser.add_argument('--window_length', type=int, default=2048)
+    parser.add_argument('--n_fft', type=int, default=2048)
+    parser.add_argument('--hop_length', type=int, default=512)
     parser.add_argument('--num_embeddings', type=int, default=512)
     parser.add_argument('--num_hidden_channels', type=int, default=128)
     parser.add_argument('--num_residual_channels', type=int, default=32)
@@ -334,7 +337,8 @@ if __name__ == '__main__':
             dataloader_class = partial(
                 WavToSpectrogramDataLoader,
                 device=device,
-                n_fft=N_FFT, hop_length=HOP_LENGTH,
+                n_fft=args.n_fft, hop_length=args.hop_length,
+                window_length=args.window_length,
                 use_mel_scale=not args.disable_mel_scale,
                 lower_edge_hertz=args.mel_scale_lower_edge_hertz,
                 upper_edge_hertz=args.mel_scale_upper_edge_hertz,
