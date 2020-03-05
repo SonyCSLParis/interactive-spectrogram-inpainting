@@ -131,60 +131,83 @@ class ResBlock(nn.Module):
 
 class Encoder(nn.Module):
     def __init__(self, in_channel: int, channel: int, n_res_block: int,
-                 n_res_channel: int, resolution_factor: int, groups: int = 1):
+                 n_res_channel: int, resolution_factor: int, groups: int,
+                 use_local_kernels: bool):
         super().__init__()
+        self.use_local_kernels = use_local_kernels
 
+        downsampling_stride = 2
+        if not use_local_kernels:
+            # downsampling using overlapping kernels
+            downsampling_kernel_size = 2 * downsampling_stride
+        else:
+            # downsampling kernels do not overlap
+            downsampling_kernel_size = downsampling_stride
         # downsampling module
         if resolution_factor == 16:
             blocks = [
-                nn.Conv2d(in_channel, channel // 4, 4, stride=2,
+                nn.Conv2d(in_channel, channel // 4,
+                          downsampling_kernel_size,
+                          stride=downsampling_stride,
                           padding=1, groups=groups),
                 nn.ReLU(inplace=True),
-                nn.Conv2d(channel // 4, channel // 2, 4, stride=2, padding=1,
+                nn.Conv2d(channel // 4, channel // 2,
+                          downsampling_kernel_size, stride=downsampling_stride,
+                          padding=1,
                           groups=groups),
                 nn.ReLU(inplace=True),
-                nn.Conv2d(channel // 2, 3 * channel // 4, 4, stride=2,
+                nn.Conv2d(channel // 2, 3 * channel // 4,
+                          downsampling_kernel_size, stride=downsampling_stride,
                           padding=1, groups=groups),
                 nn.ReLU(inplace=True),
-                nn.Conv2d(3 * channel // 4, channel, 4, stride=2, padding=1,
+                nn.Conv2d(3 * channel // 4, channel,
+                          downsampling_kernel_size, stride=downsampling_stride,
+                          padding=1,
                           groups=groups),
                 nn.ReLU(inplace=True),
                 nn.Conv2d(channel, channel, 3, padding=1, groups=groups),
             ]
         elif resolution_factor == 8:
             blocks = [
-                nn.Conv2d(in_channel, channel // 2, 4, stride=2, padding=1,
-                          groups=groups),
+                nn.Conv2d(in_channel, channel // 2,
+                          downsampling_kernel_size, stride=downsampling_stride,
+                          padding=1, groups=groups),
                 nn.ReLU(inplace=True),
-                nn.Conv2d(channel // 2, channel // 2, 4, stride=2, padding=1,
-                          groups=groups),
+                nn.Conv2d(channel // 2, channel // 2,
+                          downsampling_kernel_size, stride=downsampling_stride,
+                          padding=1, groups=groups),
                 nn.ReLU(inplace=True),
                 nn.Conv2d(
-                    channel // 2, channel, 4, stride=2, padding=1,
-                    groups=groups),
+                    channel // 2, channel,
+                    downsampling_kernel_size, stride=downsampling_stride,
+                    padding=1, groups=groups),
                 nn.ReLU(inplace=True),
                 nn.Conv2d(channel, channel, 3, padding=1, groups=groups),
             ]
         elif resolution_factor == 4:
             blocks = [
-                nn.Conv2d(in_channel, channel // 2, 4, stride=2, padding=1,
-                          groups=groups),
+                nn.Conv2d(in_channel, channel // 2,
+                          downsampling_kernel_size, stride=downsampling_stride,
+                          padding=1, groups=groups),
                 nn.ReLU(inplace=True),
-                nn.Conv2d(channel // 2, channel, 4, stride=2, padding=1,
-                          groups=groups),
+                nn.Conv2d(channel // 2, channel,
+                          downsampling_kernel_size, stride=downsampling_stride,
+                          padding=1, groups=groups),
                 nn.ReLU(inplace=True),
                 nn.Conv2d(channel, channel, 3, padding=1,
                           groups=groups),
             ]
         elif resolution_factor == 2:
             blocks = [
-                nn.Conv2d(in_channel, channel // 2, 4, stride=2, padding=1,
-                          groups=groups),
+                nn.Conv2d(in_channel, channel // 2,
+                          downsampling_kernel_size, stride=downsampling_stride,
+                          padding=1, groups=groups),
                 nn.ReLU(inplace=True),
                 nn.Conv2d(channel // 2, channel, 3, padding=1, groups=groups),
             ]
         else:
-            raise ValueError(f"Unexpected resolution factor {resolution_factor}")
+            raise ValueError(
+                f"Unexpected resolution factor {resolution_factor}")
 
         for i in range(n_res_block):
             blocks.append(ResBlock(channel, n_res_channel))
@@ -200,9 +223,11 @@ class Encoder(nn.Module):
 class Decoder(nn.Module):
     def __init__(self, in_channel: int, out_channel: int, channel: int,
                  n_res_block: int, n_res_channel: int, resolution_factor: int,
-                 groups: int = 1,
-                 output_activation: Optional[nn.Module] = None):
+                 groups: int, use_local_kernels: bool,
+                 output_activation: Optional[nn.Module] = None
+                 ):
         super().__init__()
+        self.use_local_kernels = use_local_kernels
 
         blocks = [nn.Conv2d(in_channel, channel, 3, padding=1)]
 
@@ -211,59 +236,84 @@ class Decoder(nn.Module):
 
         blocks.append(nn.ReLU(inplace=True))
 
+        upsampling_stride = 2
+        if not use_local_kernels:
+            # upsampling using overlapping kernels
+            upsampling_kernel_size = 2 * upsampling_stride
+        else:
+            # upsampling kernels do not overlap
+            upsampling_kernel_size = upsampling_stride
+
+        if not use_local_kernels:
+            upsampling_kernel_size = 4
+        else:
+            # upsampling kernels do not overlap
+            upsampling_kernel_size = 2
         # upsampling module
         if resolution_factor == 16:
             blocks.extend(
                 [
-                    nn.ConvTranspose2d(channel, 3 * channel // 4, 4, stride=2,
-                                       padding=1, groups=groups),
+                    nn.ConvTranspose2d(
+                        channel, 3 * channel // 4,
+                        upsampling_kernel_size, stride=upsampling_stride,
+                        padding=1, groups=groups),
                     nn.ReLU(inplace=True),
                     nn.ConvTranspose2d(
-                        3 * channel // 4, channel // 2, 4, stride=2, padding=1,
-                        groups=groups),
+                        3 * channel // 4, channel // 2,
+                        upsampling_kernel_size, stride=upsampling_stride,
+                        padding=1, groups=groups),
                     nn.ReLU(inplace=True),
                     nn.ConvTranspose2d(
-                        channel // 2, channel // 4, 4, stride=2, padding=1,
-                        groups=groups),
+                        channel // 2, channel // 4,
+                        upsampling_kernel_size, stride=upsampling_stride,
+                        padding=1, groups=groups),
                     nn.ReLU(inplace=True),
                     nn.ConvTranspose2d(
-                        channel // 4, out_channel, 4, stride=2, padding=1,
-                        groups=groups)
+                        channel // 4, out_channel,
+                        upsampling_kernel_size, stride=upsampling_stride,
+                        padding=1, groups=groups)
                 ]
             )
         elif resolution_factor == 8:
             blocks.extend(
                 [
-                    nn.ConvTranspose2d(channel, channel // 2, 4, stride=2,
+                    nn.ConvTranspose2d(channel, channel // 2,
+                                       upsampling_kernel_size, stride=upsampling_stride,
                                        padding=1, groups=groups),
                     nn.ReLU(inplace=True),
                     nn.ConvTranspose2d(
-                        channel // 2, channel // 2, 4, stride=2, padding=1,
-                        groups=groups),
+                        channel // 2, channel // 2,
+                        upsampling_kernel_size, stride=upsampling_stride,
+                        padding=1, groups=groups),
                     nn.ReLU(inplace=True),
                     nn.ConvTranspose2d(
-                        channel // 2, out_channel, 4, stride=2, padding=1,
-                        groups=groups)
+                        channel // 2, out_channel,
+                        upsampling_kernel_size, stride=upsampling_stride,
+                        padding=1, groups=groups)
                 ]
             )
         elif resolution_factor == 4:
             blocks.extend(
                 [
-                    nn.ConvTranspose2d(channel, channel // 2, 4, stride=2,
+                    nn.ConvTranspose2d(channel, channel // 2,
+                                       upsampling_kernel_size, stride=upsampling_stride,
                                        padding=1, groups=groups),
                     nn.ReLU(inplace=True),
                     nn.ConvTranspose2d(
-                        channel // 2, out_channel, 4, stride=2, padding=1,
-                        groups=groups),
+                        channel // 2, out_channel,
+                        upsampling_kernel_size, stride=upsampling_stride,
+                        padding=1, groups=groups),
                 ]
             )
         elif resolution_factor == 2:
             blocks.append(
-                nn.ConvTranspose2d(channel, out_channel, 4, stride=2,
+                nn.ConvTranspose2d(channel, out_channel,
+                                   upsampling_kernel_size, stride=upsampling_stride,
                                    padding=1, groups=groups)
             )
         else:
-            raise ValueError(f"Unexpected stride value {stride}")
+            raise ValueError(
+                f"Unexpected resolution factor {resolution_factor}")
 
         if output_activation is not None:
             blocks.append(output_activation)
@@ -310,6 +360,7 @@ class VQVAE(nn.Module):
         num_embeddings: Union[int, Iterable[int]] = 512,
         decay: float = 0.99,
         groups: int = 1,
+        use_local_kernels: bool = False,
         output_spectrogram_threshold: Optional[float] = None,
         output_spectrogram_thresholded_value: Optional[float] = SPEC_THRESHOLD,
         resolution_factors: Mapping[str, int] = {
@@ -365,12 +416,14 @@ class VQVAE(nn.Module):
             self.in_channel, self.num_hidden_channels, self.n_res_block,
             self.num_residual_channels,
             resolution_factor=self.resolution_factors['bottom'],
-            groups=self.groups)
+            groups=self.groups,
+            use_local_kernels=self.use_local_kernels)
         self.enc_t = Encoder(
             self.num_hidden_channels, self.num_hidden_channels,
             self.n_res_block, self.num_residual_channels,
             resolution_factor=self.resolution_factors['top'],
-            groups=self.groups)
+            groups=self.groups,
+            use_local_kernels=self.use_local_kernels)
         try:
             self.n_embed_t, self.n_embed_b = self.num_embeddings
         except TypeError:
@@ -399,11 +452,19 @@ class VQVAE(nn.Module):
         # upsample from 'top' layer back to 'bottom' layer resolution
         upsampling_layers = []
         num_upsampling_layers = int(np.log2(self.resolution_factors['top']))
+
+        upsampling_kernel_size = 4
+        if not self.use_local_kernels:
+            upsampling_stride = upsampling_kernel_size / 2
+        else:
+            upsampling_stride = upsampling_kernel_size
+
         for i in range(num_upsampling_layers):
             upsampling_layers.append(
                 nn.ConvTranspose2d(
-                    self.embed_dim, self.embed_dim, kernel_size=4,
-                    stride=2, padding=1)
+                    self.embed_dim, self.embed_dim,
+                    kernel_size=4, stride=upsampling_stride,
+                    padding=1)
             )
         self.upsample_top_to_bottom = nn.Sequential(*upsampling_layers)
 
@@ -414,8 +475,9 @@ class VQVAE(nn.Module):
             self.n_res_block,
             self.num_residual_channels,
             resolution_factor=self.resolution_factors['bottom'],
+            groups=self.groups,
+            use_local_kernels=self.use_local_kernels,
             output_activation=self.decoder_output_activation,
-            groups=self.groups
         )
 
         self.use_gansynth_normalization = (self.normalizer_statistics
