@@ -22,8 +22,7 @@ from dataset import LMDBDataset
 from vqvae import VQVAE, InferenceVQVAE
 from pixelsnail import PixelSNAIL
 from transformer import VQNSynthTransformer
-from GANsynth_pytorch.pytorch_nsynth_lib.nsynth import (
-    wavfile_to_spec_and_IF)
+from GANsynth_pytorch.spectrograms_helpers import wavfile_to_spec_and_IF
 
 if torch.cuda.is_available():
     torch.set_default_tensor_type(torch.cuda.FloatTensor)

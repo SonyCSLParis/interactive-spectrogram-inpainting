@@ -3,8 +3,7 @@ from transformer import VQNSynthTransformer
 from sample import (sample_model, make_conditioning_tensors,
                     ConditioningMap, make_conditioning_map)
 from dataset import LMDBDataset
-from GANsynth_pytorch.pytorch_nsynth_lib.nsynth import (
-    wavfile_to_spec_and_IF)
+from GANsynth_pytorch.spectrograms_helpers import wavfile_to_spec_and_IF
 
 import soundfile
 from typing import Union, Tuple, Mapping
