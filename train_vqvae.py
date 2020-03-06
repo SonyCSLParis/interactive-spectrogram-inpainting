@@ -262,7 +262,7 @@ if __name__ == '__main__':
     parser.add_argument('--input_normalization', action='store_true')
     parser.add_argument('--precomputed_normalization_statistics', type=str,
                         default=None,
-                        help=('Path to a pickle file containing the values'
+                        help=('Path to a JSON file containing the values'
                               'for the GANSynth_pytorch.DataNormalizer object')
                         )
     parser.add_argument('--corrupt_codes', choices=['bottom', 'top', 'both'],
