@@ -243,12 +243,6 @@ class Decoder(nn.Module):
         else:
             # upsampling kernels do not overlap
             upsampling_kernel_size = upsampling_stride
-
-        if not use_local_kernels:
-            upsampling_kernel_size = 4
-        else:
-            # upsampling kernels do not overlap
-            upsampling_kernel_size = 2
         # upsampling module
         if resolution_factor == 16:
             blocks.extend(
@@ -296,7 +290,8 @@ class Decoder(nn.Module):
             blocks.extend(
                 [
                     nn.ConvTranspose2d(channel, channel // 2,
-                                       upsampling_kernel_size, stride=upsampling_stride,
+                                       upsampling_kernel_size,
+                                       stride=upsampling_stride,
                                        padding=1, groups=groups),
                     nn.ReLU(inplace=True),
                     nn.ConvTranspose2d(
@@ -308,7 +303,8 @@ class Decoder(nn.Module):
         elif resolution_factor == 2:
             blocks.append(
                 nn.ConvTranspose2d(channel, out_channel,
-                                   upsampling_kernel_size, stride=upsampling_stride,
+                                   upsampling_kernel_size,
+                                   stride=upsampling_stride,
                                    padding=1, groups=groups)
             )
         else:
@@ -455,17 +451,18 @@ class VQVAE(nn.Module):
         upsampling_layers = []
         num_upsampling_layers = int(np.log2(self.resolution_factors['top']))
 
-        upsampling_kernel_size = 4
+        upsampling_stride = 2
         if not self.use_local_kernels:
-            upsampling_stride = upsampling_kernel_size / 2
+            upsampling_kernel_size = upsampling_stride * 2
         else:
-            upsampling_stride = upsampling_kernel_size
+            upsampling_kernel_size = upsampling_stride
 
         for i in range(num_upsampling_layers):
             upsampling_layers.append(
                 nn.ConvTranspose2d(
                     self.embed_dim, self.embed_dim,
-                    kernel_size=4, stride=upsampling_stride,
+                    kernel_size=upsampling_kernel_size,
+                    stride=upsampling_stride,
                     padding=1)
             )
         self.upsample_top_to_bottom = nn.Sequential(*upsampling_layers)
