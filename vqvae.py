@@ -440,7 +440,8 @@ class VQVAE(nn.Module):
         self.dec_t = Decoder(
             self.embed_dim, self.embed_dim, self.num_hidden_channels,
             self.n_res_block, self.num_residual_channels, groups=self.groups,
-            resolution_factor=self.resolution_factors['top']
+            resolution_factor=self.resolution_factors['top'],
+            use_local_kernels=self.use_local_kernels,
         )
         self.quantize_conv_b = nn.Conv2d(
             self.embed_dim + self.num_hidden_channels,
