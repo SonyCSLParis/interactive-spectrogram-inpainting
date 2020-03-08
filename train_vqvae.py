@@ -558,9 +558,8 @@ if __name__ == '__main__':
                 # add audio summaries to Tensorboard
                 model.eval()
                 validation_samples, *_ = next(iter(validation_loader))
-                reconstructions, *_ = (
-                    model.vqvae.forward(
-                        validation_samples.to(model.device)))
+                reconstructions, *_ = (vqvae.forward(
+                    validation_samples.to(model.device)))
 
                 validation_samples = validation_samples[
                     :args.num_validation_samples_audio_tensorboard]
