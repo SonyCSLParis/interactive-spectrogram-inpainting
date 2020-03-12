@@ -434,16 +434,9 @@ if __name__ == '__main__':
                         # 'resume_training_from': args.resume_training_from
                         'resolution_factors': args.resolution_factors,
                         'output_spectrogram_min_magnitude': (
-                            spectrogramsHelper.safelog_eps
+                            spectrograms_helper.safelog_eps
                             if args.output_spectrogram_threshold else None),
-                        'use_mel_scale': args.use_mel_scale,
-                        'mel_scale_lower_edge_hertz': (
-                            args.mel_scale_lower_edge_hertz),
-                        'mel_scale_upper_edge_hertz': (
-                            args.mel_scale_upper_edge_hertz),
-                        'mel_scale_break_frequency_hertz': (
-                            args.mel_scale_break_frequency_hertz),
-                        'use_local_kernels': args.use_local_kernels
+                        'use_local_kernels': args.use_local_kernels,
                         }
 
     def print_resolution_summary(loader, resolution_factors):
