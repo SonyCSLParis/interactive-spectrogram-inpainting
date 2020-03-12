@@ -391,7 +391,7 @@ if __name__ == '__main__':
     parser.add_argument('--n_cond_res_block', type=int, default=3)
     parser.add_argument('--positional_embeddings_dim', type=int, default=16)
     parser.add_argument('--classes_for_conditioning', type=str,
-                        nargs='*', default=[])
+                        nargs='*', default=['instrument_family_str', 'pitch'])
     parser.add_argument('--class_conditioning_embedding_dim_per_modality',
                         type=int, default=16)
     parser.add_argument('--class_conditioning_prepend_to_dummy_input',
