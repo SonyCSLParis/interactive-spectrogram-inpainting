@@ -9,10 +9,9 @@ from torch import nn
 from torch.nn import functional as F
 
 import GANsynth_pytorch
-from GANsynth_pytorch.spectrograms_helper import SPEC_THRESHOLD
+from GANsynth_pytorch.spectrograms_helper import SpectrogramsHelper
 from GANsynth_pytorch import spec_ops
-from GANsynth_pytorch.pytorch_nsynth_lib.nsynth import (
-    make_masked_phase_transform)
+from GANsynth_pytorch.loader import make_masked_phase_transform
 from GANsynth_pytorch.normalizer import (DataNormalizer,
                                          DataNormalizerStatistics)
 
@@ -374,8 +373,7 @@ class VQVAE(nn.Module):
         groups: int = 1,
         use_local_kernels: bool = False,
         output_activation_type: Optional[str] = None,
-        output_spectrogram_threshold: Optional[float] = None,
-        output_spectrogram_thresholded_value: Optional[float] = SPEC_THRESHOLD,
+        output_spectrogram_min_magnitude: Optional[float] = None,
         resolution_factors: Mapping[str, int] = {
             'bottom': 4,
             'top': 2,
@@ -407,9 +405,8 @@ class VQVAE(nn.Module):
         self.embeddings_initial_variance = embeddings_initial_variance
         self.output_activation_type = output_activation_type
         self.corruption_weights = corruption_weights
-        self.output_spectrogram_threshold = output_spectrogram_threshold
-        self.output_spectrogram_thresholded_value = (
-            output_spectrogram_thresholded_value)
+        self.output_spectrogram_min_magnitude = (
+            output_spectrogram_min_magnitude)
 
         if isinstance(normalizer_statistics, DataNormalizerStatistics):
             self.normalizer_statistics = normalizer_statistics.__dict__
@@ -509,7 +506,7 @@ class VQVAE(nn.Module):
 
         if self.output_activation_type == 'threshold_gelu':
             self.output_activation = BiasedNonLinearity(
-                nn.GELU(), self.output_spectrogram_threshold,
+                nn.GELU(), self.output_spectrogram_min_magnitude,
                 channel_index=0
             )
         else:
@@ -517,10 +514,9 @@ class VQVAE(nn.Module):
                 "Unexpected output activation type")
 
         self.output_transform = None
-        if self.output_spectrogram_threshold is not None:
+        if self.output_spectrogram_min_magnitude is not None:
             self.output_transform = make_masked_phase_transform(
-                self.output_spectrogram_threshold,
-                self.output_spectrogram_thresholded_value)
+                self.output_spectrogram_min_magnitude)
 
     def forward(self, input):
         quant_t, quant_b, diff, id_t, id_b, perplexity_t, perplexity_b = self.encode(
@@ -613,7 +609,14 @@ class VQVAE(nn.Module):
 
 
 class InferenceVQVAE(object):
-    def __init__(self, vqvae: VQVAE, device: str, hop_length: int, n_fft: int):
+    # TODO(theis): clean this up
+    # Maybe create a .from_vqvae(vqvae: VQVAE) -> SpectrogramHelper factory method in
+    # SpectrogramHelper and remove this altogether?
+    # But there remains the "need" for the sample_reconstructions method
+    # (which could be removed nonetheless, or moved to loader.py)
+    def __init__(self, vqvae: VQVAE, spectrogramsHelper: SpectrogramsHelper,
+                 device: str, hop_length: int, n_fft: int):
+        raise NotImplementedError("Deprecated")
         self.vqvae = vqvae
         self.device = device
         self.hop_length = hop_length
@@ -633,21 +636,21 @@ class InferenceVQVAE(object):
         return mag_and_IF_batch, reconstructed_mag_and_IF_batch, id_t, id_b
 
     @torch.no_grad()
-    def mag_and_IF_to_audio(self, mag_and_IF: torch.Tensor) -> torch.Tensor:
+    def to_audio(self, spectrogram: torch.Tensor) -> torch.Tensor:
         input_is_batch = True
-        if mag_and_IF.ndim == 3:
+        if spectrogram.ndim == 3:
             # a single sample was provided, wrap it as a batch
             input_is_batch = False
-            mag_and_IF = mag_and_IF.unsqueeze(0)
-        elif mag_and_IF.ndim == 4:
+            spectrogram = spectrogram.unsqueeze(0)
+        elif spectrogram.ndim == 4:
             pass
         else:
             raise ValueError("Input must either be a sample of shape "
                              "[channels, freq, time] or a batch of such samples")
 
         if self.vqvae.use_mel_scale:
-            spec_to_audio = functools.partial(
-                GANsynth_pytorch.spectrograms_helper.mel_logmag_and_IF_to_audio,
+            to_audio = functools.partial(
+                GANsynth_pytorch.spectrograms_helper.to_audio,
                 lower_edge_hertz=self.vqvae.mel_scale_lower_edge_hertz,
                 upper_edge_hertz=self.vqvae.mel_scale_upper_edge_hertz,
                 mel_break_frequency_hertz=(
@@ -657,14 +660,8 @@ class InferenceVQVAE(object):
             spec_to_audio = (GANsynth_pytorch.spectrograms_helper
                              .logmag_and_IF_to_audio)
 
-        channel_dimension = 1
-        mag_batch = mag_and_IF.select(channel_dimension, 0
-                                      )
-        IF_batch = mag_and_IF.select(channel_dimension, 1
-                                     )
-
-        audio_batch = spec_to_audio(mag_batch, IF_batch,
-                                    hop_length=self.hop_length,
-                                    n_fft=self.n_fft)
+        audio_batch = to_audio(spectrogram,
+                               hop_length=self.hop_length,
+                               n_fft=self.n_fft)
 
         return audio_batch

@@ -19,12 +19,13 @@ from torch.utils.tensorboard.writer import SummaryWriter
 from vqvae import VQVAE, InferenceVQVAE
 from scheduler import CycleScheduler
 
-from nsynth_dataset import NSynthH5Dataset
-from GANsynth_pytorch.pytorch_nsynth_lib.nsynth import (
-    NSynth, WavToSpectrogramDataLoader, make_masked_phase_transform)
+from GANsynth_pytorch.pytorch_nsynth_lib.nsynth import NSynth
+from GANsynth_pytorch.spectrograms_helper import (SpectrogramsHelper,
+                                                  MelSpectrogramsHelper)
+from GANsynth_pytorch.loader import (WavToSpectrogramDataLoader,
+                                     MaskedPhaseWavToSpectrogramDataLoader)
 from GANsynth_pytorch.normalizer import DataNormalizer
 import GANsynth_pytorch.utils.plots as gansynthplots
-from GANsynth_pytorch.spectrograms_helper import SPEC_THRESHOLD
 from GANsynth_pytorch.spec_ops import _MEL_BREAK_FREQUENCY_HERTZ
 
 import matplotlib as mpl
@@ -75,7 +76,8 @@ def train(epoch: int, loader: DataLoader, model: nn.Module,
 
         img = img.to(device)
 
-        out, latent_loss, perplexity_t_mean, perplexity_b_mean, *_ = parallel_model(img)
+        out, latent_loss, perplexity_t_mean, perplexity_b_mean, *_ = (
+            parallel_model(img))
         recon_loss = criterion(out, img)
         latent_loss = latent_loss.mean()
         loss = recon_loss + latent_loss_weight * latent_loss
@@ -211,6 +213,7 @@ if __name__ == '__main__':
     #                     choices=[2, 4, 8, 16])
     parser.add_argument('--resolution_factors', action=StoreDictKeyPair,
                         default={'top': 2, 'bottom': 2})
+    parser.add_argument('--fs_hz', type=int, default=16000)
     parser.add_argument('--window_length', type=int, default=2048)
     parser.add_argument('--n_fft', type=int, default=2048)
     parser.add_argument('--use_local_kernels', action='store_true')
@@ -222,7 +225,7 @@ if __name__ == '__main__':
     parser.add_argument('--lr', type=float, default=3e-4)
     parser.add_argument('--latent_loss_weight', type=float, default=0.25)
     parser.add_argument('--dataset', type=str, choices=['nsynth', 'imagenet'])
-    parser.add_argument('--disable_mel_scale', action='store_true')
+    parser.add_argument('--use_mel_scale', action='store_true')
     parser.add_argument('--mel_scale_lower_edge_hertz', type=float,
                         default=0.0)
     parser.add_argument('--mel_scale_upper_edge_hertz', type=float,
@@ -237,10 +240,9 @@ if __name__ == '__main__':
     parser.add_argument('--groups', type=int, default=1)
     parser.add_argument('--sched', type=str)
     parser.add_argument('--batch_size', type=int, default=64)
-    parser.add_argument('--output_spectrogram_threshold', type=float,
-                        default=None)
-    parser.add_argument('--output_spectrogram_thresholded_value', type=float,
-                        default=SPEC_THRESHOLD)
+    parser.add_argument('--output_spectrogram_threshold', action='store_true')
+    # parser.add_argument('--output_spectrogram_thresholded_value', type=float,
+    #                     default=SPEC_THRESHOLD)
     parser.add_argument('--num_workers', type=int, default=4,
                         help='Number of workers for the Dataloaders')
     parser.add_argument('--dataset_audio_directory_paths', type=str,
@@ -271,6 +273,9 @@ if __name__ == '__main__':
     parser.add_argument('--embeddings_initial_variance', type=float, default=1)
     parser.add_argument('--resume_training_from', type=str,
                         help='Path to a checkpoint to resume training from')
+    parser.add_argument('--num_validation_samples_audio_tensorboard', type=int,
+                        default=3, help=("Number of validation audio samples "
+                                         "to store in Tensorboard"))
 
     args = parser.parse_args()
 
@@ -298,122 +303,106 @@ if __name__ == '__main__':
     print("Loading dataset: ", dataset_name)
     vqvae_decoder_activation = None
     output_transform = None
-    if dataset_name == 'imagenet':
-        def make_resize_transform(target_size: Union[int, Sequence[int]],
-                                  normalize: bool):
-            transformations = [
-                transforms.Resize(target_size),
-                transforms.CenterCrop(target_size),
-                transforms.ToTensor()
-            ]
-            if normalize:
-                transformations.append(transforms.Normalize([0.5, 0.5, 0.5],
-                                                            [0.5, 0.5, 0.5]))
-            return transforms.Compose(transformations)
 
-        transform = make_resize_transform(args.size,
-                                          args.normalize_input_images)
+    spectrogram_parameters = {
+        'fs_hz': args.fs_hz,
+        'n_fft': args.n_fft,
+        'hop_length': args.hop_length,
+        'window_length': args.window_length,
+        'device': device,
+    }
 
-        train_dataset = datasets.ImageFolder(train_dataset_path,
-                                             transform=transform)
-        validation_dataset = datasets.ImageFolder(validation_dataset_path,
-                                                  transform=transform)
-        loader = DataLoader(train_dataset, batch_size=args.batch_size,
-                            shuffle=True, num_workers=args.num_workers)
-        validation_loader = DataLoader(validation_dataset,
-                                       batch_size=args.batch_size,
-                                       shuffle=True,
-                                       num_workers=args.num_workers)
-        dataloader_for_gansynth_normalization = None
-        normalizer_statistics = None
-        in_channel = 3
+    spectrogramsHelper: SpectrogramsHelper
+    if not args.use_mel_scale:
+        spectrograms_helper = SpectrogramsHelper(
+            **spectrogram_parameters
+        )
+    else:
+        spectrogramsHelper = MelSpectrogramsHelper(
+            **spectrogram_parameters,
+            lower_edge_hertz=args.mel_scale_lower_edge_hertz,
+            upper_edge_hertz=args.mel_scale_upper_edge_hertz,
+            mel_break_frequency_hertz=args.mel_scale_break_frequency_hertz,
+            mel_bin_width_threshold_factor=args.mel_scale_expand_resolution_factor
+        )
 
-    elif dataset_name == 'nsynth':
-        # class to use for building the dataloaders
-        dataloader_class = DataLoader
-        if args.dataset_type == 'wav':
-            valid_pitch_range = [24, 84]
-            # converts wavforms to spectrograms on-the-fly on GPU
-            from functools import partial
-            dataloader_class = partial(
-                WavToSpectrogramDataLoader,
-                device=device,
-                n_fft=args.n_fft, hop_length=args.hop_length,
-                window_length=args.window_length,
-                use_mel_scale=not args.disable_mel_scale,
-                lower_edge_hertz=args.mel_scale_lower_edge_hertz,
-                upper_edge_hertz=args.mel_scale_upper_edge_hertz,
-                mel_break_frequency_hertz=args.mel_scale_break_frequency_hertz,
-                expand_resolution_factor=args.mel_scale_expand_resolution_factor)
+    # class to use for building the dataloaders
+    dataloader_class = DataLoader
+    if args.dataset_type == 'wav':
+        valid_pitch_range = [24, 84]
 
-            if args.output_spectrogram_threshold is not None:
-                output_transform = make_masked_phase_transform(
-                    args.output_spectrogram_threshold,
-                    args.output_spectrogram_thresholded_value)
+        # converts wavforms to spectrograms on-the-fly on GPU
+        dataloader_class: WavToSpectrogramDataLoader
+        if args.output_spectrogram_threshold:
+            dataloader_class = MaskedPhaseWavToSpectrogramDataLoader
+        else:
+            dataloader_class = WavToSpectrogramDataLoader
 
-            nsynth_dataset = NSynth(
+        nsynth_dataset = NSynth(
+            audio_directory_paths=audio_directory_paths,
+            json_data_path=train_dataset_json_data_path,
+            valid_pitch_range=valid_pitch_range,
+            categorical_field_list=[],
+            squeeze_mono_channel=True
+        )
+
+        if args.validation_dataset_json_data_path:
+            nsynth_validation_dataset = NSynth(
                 audio_directory_paths=audio_directory_paths,
-                json_data_path=train_dataset_json_data_path,
+                json_data_path=validation_dataset_json_data_path,
                 valid_pitch_range=valid_pitch_range,
                 categorical_field_list=[],
                 squeeze_mono_channel=True
             )
 
-            if args.validation_dataset_json_data_path:
-                nsynth_validation_dataset = NSynth(
-                    audio_directory_paths=audio_directory_paths,
-                    json_data_path=validation_dataset_json_data_path,
-                    valid_pitch_range=valid_pitch_range,
-                    categorical_field_list=[],
-                    squeeze_mono_channel=True
-                )
-
-        elif args.dataset_type == 'hdf5':
-            nsynth_dataset = NSynthH5Dataset(
-                root_path=train_dataset_path,
-                use_mel_frequency_scale=True)
-            if args.validation_dataset_path:
-                nsynth_validation_dataset = NSynthH5Dataset(
-                    root_path=validation_dataset_path,
-                    use_mel_frequency_scale=True)
-        else:
-            assert False
-
-        loader = dataloader_class(
-            nsynth_dataset, batch_size=args.batch_size,
-            num_workers=args.num_workers, shuffle=True,
-            pin_memory=True,
-            transform=output_transform)
-
-        validation_loader = dataloader_class(nsynth_validation_dataset,
-                                             batch_size=args.batch_size,
-                                             num_workers=args.num_workers,
-                                             shuffle=True, pin_memory=True,
-                                             transform=output_transform
-                                             )
-
-        in_channel = 2
-
-        dataloader_for_gansynth_normalization = None
-        normalizer_statistics = None
-        if args.precomputed_normalization_statistics is not None:
-            data_normalizer = DataNormalizer.load_statistics(
-                expand_path(args.precomputed_normalization_statistics))
-            normalizer_statistics = data_normalizer.statistics
-        elif args.input_normalization:
-            dataloader_for_gansynth_normalization = loader
-            # compute normalization parameters
-            data_normalizer = DataNormalizer(
-                dataloader=dataloader_for_gansynth_normalization)
-            # store normalization parameters
-            normalization_statistics_path = (
-                train_dataset_json_data_path.parent
-                / 'normalization_statistics.json')
-            data_normalizer.dump_statistics(normalization_statistics_path)
-            normalizer_statistics = data_normalizer.statistics
+    elif args.dataset_type == 'hdf5':
+        raise NotImplementedError(
+            "Deprecated in favor of on-the-fly spectrogram generation")
+        # nsynth_dataset = NSynthH5Dataset(
+        #     root_path=train_dataset_path,
+        #     use_mel_frequency_scale=True)
+        # if args.validation_dataset_path:
+        #     nsynth_validation_dataset = NSynthH5Dataset(
+        #         root_path=validation_dataset_path,
+        #         use_mel_frequency_scale=True)
     else:
-        raise ValueError("Unrecognized dataset name: ",
-                         dataset_name)
+        assert False
+
+    loader = dataloader_class(
+        nsynth_dataset,
+        spectrogramsHelper=spectrogramsHelper,
+        batch_size=args.batch_size,
+        num_workers=args.num_workers, shuffle=True,
+        pin_memory=True
+    )
+
+    validation_loader = dataloader_class(
+        nsynth_validation_dataset,
+        spectrogramsHelper=spectrogramsHelper,
+        batch_size=args.batch_size,
+        num_workers=args.num_workers,
+        shuffle=True, pin_memory=True,
+    )
+
+    in_channel = 2
+
+    dataloader_for_gansynth_normalization = None
+    normalizer_statistics = None
+    if args.precomputed_normalization_statistics is not None:
+        data_normalizer = DataNormalizer.load_statistics(
+            expand_path(args.precomputed_normalization_statistics))
+        normalizer_statistics = data_normalizer.statistics
+    elif args.input_normalization:
+        dataloader_for_gansynth_normalization = loader
+        # compute normalization parameters
+        data_normalizer = DataNormalizer(
+            dataloader=dataloader_for_gansynth_normalization)
+        # store normalization parameters
+        normalization_statistics_path = (
+            train_dataset_json_data_path.parent
+            / 'normalization_statistics.json')
+        data_normalizer.dump_statistics(normalization_statistics_path)
+        normalizer_statistics = data_normalizer.statistics
 
     print("Initializing model")
 
@@ -444,11 +433,10 @@ if __name__ == '__main__':
                             args.embeddings_initial_variance,
                         # 'resume_training_from': args.resume_training_from
                         'resolution_factors': args.resolution_factors,
-                        'output_spectrogram_threshold': (
-                            args.output_spectrogram_threshold),
-                        'output_spectrogram_thresholded_value': (
-                            args.output_spectrogram_thresholded_value),
-                        'use_mel_scale': not args.disable_mel_scale,
+                        'output_spectrogram_min_magnitude': (
+                            spectrogramsHelper.safelog_eps
+                            if args.output_spectrogram_threshold else None),
+                        'use_mel_scale': args.use_mel_scale,
                         'mel_scale_lower_edge_hertz': (
                             args.mel_scale_lower_edge_hertz),
                         'mel_scale_upper_edge_hertz': (
@@ -491,9 +479,6 @@ if __name__ == '__main__':
         model.load_state_dict(torch.load(checkpoint_path,
                                          map_location=device)
                               )
-
-    inference_vqvae = InferenceVQVAE(model, device,
-                                     hop_length=HOP_LENGTH, n_fft=N_FFT)
 
     optimizer = optim.Adam(model.parameters(), lr=args.lr)
     scheduler = None
@@ -553,44 +538,50 @@ if __name__ == '__main__':
                  device, dry_run=args.dry_run,
                  latent_loss_weight=args.latent_loss_weight)
 
-        if tensorboard_writer is not None and not (
-                args.dry_run or args.disable_writes_to_disk):
-            tensorboard_writer.add_scalar('validation/reconstruction_mse',
-                                          mse_validation,
-                                          global_step=epoch_index)
-            tensorboard_writer.add_scalar('validation/latent_loss',
-                                          latent_loss_validation,
-                                          global_step=epoch_index)
-            tensorboard_writer.add_scalar('validation/perplexity_top',
-                                          perplexity_t_validation,
-                                          global_step=epoch_index)
-            tensorboard_writer.add_scalar('validation/perplexity_bottom',
-                                          perplexity_b_validation,
-                                          global_step=epoch_index)
+            if tensorboard_writer is not None and not (
+                    args.dry_run or args.disable_writes_to_disk):
+                tensorboard_writer.add_scalar('validation/reconstruction_mse',
+                                              mse_validation,
+                                              global_step=epoch_index)
+                tensorboard_writer.add_scalar('validation/latent_loss',
+                                              latent_loss_validation,
+                                              global_step=epoch_index)
+                tensorboard_writer.add_scalar('validation/perplexity_top',
+                                              perplexity_t_validation,
+                                              global_step=epoch_index)
+                tensorboard_writer.add_scalar('validation/perplexity_bottom',
+                                              perplexity_b_validation,
+                                              global_step=epoch_index)
 
-            # if i+1 % tensorboard_audio_interval_epochs == 0:
-            if dataset_name == 'nsynth':
-                # add audio summaries
+                # if i+1 % tensorboard_audio_interval_epochs == 0:
 
-                samples, reconstructions, *_ = inference_vqvae.sample_reconstructions(
-                    validation_loader)
-                samples = samples[:3]
-                reconstructions = reconstructions[:3]
+                # add audio summaries to Tensorboard
+                model.eval()
+                validation_samples, *_ = next(iter(validation_loader))
+                reconstructions, *_ = (vqvae.forward(
+                    validation_samples.to(model.device)))
 
-                # add audio files to Tensorboards
-                samples_audio = inference_vqvae.mag_and_IF_to_audio(samples)
-                reconstructions_audio = inference_vqvae.mag_and_IF_to_audio(
+                validation_samples = validation_samples[
+                    :args.num_validation_samples_audio_tensorboard]
+                reconstructions = reconstructions[
+                    :args.num_validation_samples_audio_tensorboard]
+
+                validation_samples_audio = spectrogramsHelper.to_audio(
+                    validation_samples)
+                reconstructions_audio = spectrogramsHelper.to_audio(
                     reconstructions)
-                tensorboard_writer.add_audio('Original (end of epoch, validation data)',
-                                             samples_audio.flatten(),
-                                             epoch_index)
-                tensorboard_writer.add_audio('Reconstructions (end of epoch, validation data)',
-                                             reconstructions_audio.flatten(),
-                                             epoch_index)
+                tensorboard_writer.add_audio(
+                    'Original (end of epoch, validation data)',
+                    validation_samples_audio.flatten(),
+                    epoch_index)
+                tensorboard_writer.add_audio(
+                    'Reconstructions (end of epoch, validation data)',
+                    reconstructions_audio.flatten(),
+                    epoch_index)
 
                 # add spectrogram plots to Tensorboards
                 mel_specs_original, mel_IFs_original = (
-                    np.swapaxes(samples.data.cpu().numpy(), 0, 1))
+                    np.swapaxes(validation_samples.data.cpu().numpy(), 0, 1))
                 mel_specs_reconstructions, mel_IFs_reconstructions = (
                     np.swapaxes(reconstructions.data.cpu().numpy(), 0, 1))
                 mel_specs = np.concatenate([mel_specs_original,
@@ -600,23 +591,10 @@ if __name__ == '__main__':
 
                 spec_figure, _ = gansynthplots.plot_mel_representations_batch(
                     log_melspecs=mel_specs, mel_IFs=mel_IFs,
-                    hop_length=HOP_LENGTH, fs_hz=FS_HZ)
+                    hop_length=spectrogramsHelper.hop_length,
+                    fs_hz=spectrogramsHelper.fs_hz)
                 tensorboard_writer.add_figure('Originals + Reconstructions (mel-scale, logspec/IF, validation data)',
                                               spec_figure,
                                               epoch_index)
-            elif dataset_name == 'imagenet':
-                if epoch_index % 5 == 0:
-                    for subset_name, subset_loader in [('training', loader),
-                                                       ('validation', validation_loader)]:
-                        with torch.no_grad():
-                            samples = subset_loader.__iter__().__next__()[0].to(device)[:16]
-                            reconstructions = model(samples)[0]
-                            samples_and_reconstructions = torch.cat(
-                                [samples, reconstructions], dim=0)
-                            utils.save_image(
-                                samples_and_reconstructions,
-                                os.path.join(DIRPATH, f'samples/{run_ID}/',
-                                             f'{str(epoch_index + 1).zfill(5)}_{subset_name}.png')
-                            )
 
-            tensorboard_writer.flush()
+                tensorboard_writer.flush()
