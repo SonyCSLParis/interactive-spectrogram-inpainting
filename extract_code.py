@@ -17,6 +17,8 @@ from tqdm import tqdm
 
 from dataset import ImageFileDataset, CodeRow, LMDBDataset
 from vqvae import InferenceVQVAE, VQVAE
+import utils as vqvae_utils
+from utils import expand_path
 
 from GANsynth_pytorch.pytorch_nsynth_lib.nsynth import (
     NSynth, WavToSpectrogramDataLoader)
@@ -116,9 +118,6 @@ if __name__ == '__main__':
             json.dump(args.__dict__, f, indent=4)
 
     device = args.device
-
-    def expand_path(path: str) -> pathlib.Path:
-        return pathlib.Path(path).expanduser().absolute()
 
     audio_directory_paths = [expand_path(path)
                              for path in args.dataset_audio_directory_paths]
