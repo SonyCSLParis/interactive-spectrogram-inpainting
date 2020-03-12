@@ -118,6 +118,7 @@ def run_model(args, epoch: int, loader: DataLoader, model: VQNSynthTransformer,
               mask_sampler: Optional[SequenceMask] = None,
               plot_frequency_batch: int = 200,
               num_codes_dictionary: int = None,
+              clip_grad_norm: Optional[float] = None,
               drop_loss_half_DEBUG: bool = False,
               train_num_steps_sequences_DEBUG: Optional[int] = None):
     run_type = 'training' if is_training else 'validation'
@@ -144,7 +145,7 @@ def run_model(args, epoch: int, loader: DataLoader, model: VQNSynthTransformer,
 
     for batch_index, (top, bottom, class_conditioning_tensors) in enumerate(tqdm_loader):
         if is_training:
-            model.zero_grad()
+            parallel_model.zero_grad()
 
         class_conditioning_tensors = {
             condition_name: condition_tensor.to(device)
@@ -245,6 +246,9 @@ def run_model(args, epoch: int, loader: DataLoader, model: VQNSynthTransformer,
             loss = criterion(time_frequency_logits_out, target)
 
         if is_training:
+            nn.utils.clip_grad_norm_(parallel_model.parameters(),
+                                     clip_grad_norm)
+
             loss.backward()
 
             optimizer.step()
@@ -383,6 +387,7 @@ if __name__ == '__main__':
     parser.add_argument('--batch_size', type=int, default=32)
     parser.add_argument('--hier', type=str, default='top')
     parser.add_argument('--lr', type=float, default=3e-4)
+    parser.add_argument('--clip_grad_norm', type=float, default=None)
     parser.add_argument('--channel', type=int, default=256)
     parser.add_argument('--label_smoothing', default=0.0, type=float)
     parser.add_argument('--n_res_block', type=int, default=4)
@@ -684,6 +689,8 @@ if __name__ == '__main__':
         best_validation_loss = float("inf")
 
     if args.evaluate_only:
+        assert validation_loader is not None
+
         with torch.no_grad():
             total_validation_loss, total_accuracy, num_validation_samples = run_model(
                 args, initial_epoch-1, validation_loader, model, optimizer,
@@ -698,6 +705,7 @@ if __name__ == '__main__':
                       is_training=True,
                       mask_sampler=mask_sampler,
                       num_codes_dictionary=model.n_class,
+                      clip_grad_norm=args.clip_grad_norm,
                       plot_frequency_batch=args.plot_frequency_batch,
                       drop_loss_half_DEBUG=args.drop_loss_half_DEBUG,
                       train_num_steps_sequences_DEBUG=args.train_num_steps_sequences_DEBUG)
