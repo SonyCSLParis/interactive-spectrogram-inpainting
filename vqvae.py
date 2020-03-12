@@ -320,6 +320,22 @@ class Decoder(nn.Module):
         return self.blocks(input)
 
 
+class BiasedNonLinearity(nn.Module):
+    def __init__(self, activation: nn.Module, bias: float,
+                 channel_index: int = 0):
+        super().__init__()
+        self.activation = activation
+        self.bias = bias
+        self.channel_index = channel_index
+
+    def forward(self, input: torch.Tensor) -> torch.Tensor:
+        # retrieve channel
+        channel = input[:, self.channel_index]
+        channel = self.bias + self.non_linearity(channel)
+        input[:, self.channel_index] = channel
+        return input
+
+
 class VQVAE(nn.Module):
     """Implementation of the VQ-VAE model
 
@@ -357,6 +373,7 @@ class VQVAE(nn.Module):
         decay: float = 0.99,
         groups: int = 1,
         use_local_kernels: bool = False,
+        output_activation_type: Optional[str] = None,
         output_spectrogram_threshold: Optional[float] = None,
         output_spectrogram_thresholded_value: Optional[float] = SPEC_THRESHOLD,
         resolution_factors: Mapping[str, int] = {
@@ -364,6 +381,7 @@ class VQVAE(nn.Module):
             'top': 2,
         },
         embeddings_initial_variance: float = 1,
+        # TODO(theis): remove this parameter, hard to serialize and save
         decoder_output_activation: Optional[nn.Module] = None,
         normalizer_statistics: Optional[
             Union[DataNormalizerStatistics, Mapping[str, float]]] = None,
@@ -387,7 +405,7 @@ class VQVAE(nn.Module):
         self.groups = groups
         self.resolution_factors = resolution_factors
         self.embeddings_initial_variance = embeddings_initial_variance
-        self.decoder_output_activation = decoder_output_activation
+        self.output_activation_type = output_activation_type
         self.corruption_weights = corruption_weights
         self.output_spectrogram_threshold = output_spectrogram_threshold
         self.output_spectrogram_thresholded_value = (
@@ -488,6 +506,15 @@ class VQVAE(nn.Module):
             self.data_normalizer = DataNormalizer(data_normalizer_statistics)
         else:
             self.data_normalizer = None
+
+        if self.output_activation_type == 'threshold_gelu':
+            self.output_activation = BiasedNonLinearity(
+                nn.GELU(), self.output_spectrogram_threshold,
+                channel_index=0
+            )
+        else:
+            assert self.output_activation is None, (
+                "Unexpected output activation type")
 
         self.output_transform = None
         if self.output_spectrogram_threshold is not None:
@@ -616,7 +643,7 @@ class InferenceVQVAE(object):
             pass
         else:
             raise ValueError("Input must either be a sample of shape "
-                             "[channels, freq, time] or a batch of such")
+                             "[channels, freq, time] or a batch of such samples")
 
         if self.vqvae.use_mel_scale:
             spec_to_audio = functools.partial(
