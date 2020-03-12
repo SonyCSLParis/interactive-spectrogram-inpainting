@@ -1,13 +1,15 @@
-from typing import Iterable, Mapping, Optional
+from typing import Iterable, Mapping, Optional, Sequence
 import os
 import pickle
 import numpy as np
 from collections import namedtuple, OrderedDict
 
+from sklearn.preprocessing import LabelEncoder
+import lmdb
+
 import torch
 from torch.utils.data import Dataset
 from torchvision import datasets
-import lmdb
 
 
 CodeRow = namedtuple('CodeRow', ['top', 'bottom', 'attributes', 'filename'])
@@ -33,7 +35,7 @@ class LMDBDataset(Dataset):
         * active_class_labels, optional, Iterable[str], default=[]:
             If provided,
     """
-    def __init__(self, path, classes_for_conditioning: Optional[Iterable[str]] = None):
+    def __init__(self, path, classes_for_conditioning: Sequence[str] = []):
         self.env = lmdb.open(
             str(path),
             max_readers=32,
@@ -47,6 +49,7 @@ class LMDBDataset(Dataset):
         if not self.env:
             raise IOError('Cannot open lmdb dataset', path)
 
+        self.label_encoders: Mapping[str, LabelEncoder]
         with self.env.begin(write=False) as txn:
             self.length = int(
                 txn.get('length'.encode('utf-8')).decode('utf-8'))

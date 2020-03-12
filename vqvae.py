@@ -9,8 +9,6 @@ from torch import nn
 from torch.nn import functional as F
 
 import GANsynth_pytorch
-from GANsynth_pytorch.spectrograms_helper import SpectrogramsHelper
-from GANsynth_pytorch import spec_ops
 from GANsynth_pytorch.loader import make_masked_phase_transform
 from GANsynth_pytorch.normalizer import (DataNormalizer,
                                          DataNormalizerStatistics)
@@ -385,11 +383,6 @@ class VQVAE(nn.Module):
             Union[DataNormalizerStatistics, Mapping[str, float]]] = None,
         corruption_weights: Mapping[str, Optional[List[float]]] = {'top': None,
                                                                    'bottom': None},
-        use_mel_scale: bool = True,
-        mel_scale_lower_edge_hertz: float = 0.0,
-        mel_scale_upper_edge_hertz: float = 16000 / 2.0,
-        mel_scale_break_frequency_hertz: float = (
-            spec_ops._MEL_BREAK_FREQUENCY_HERTZ),
     ):
         # store instantiation parameters
         self.in_channel = in_channel
@@ -412,13 +405,6 @@ class VQVAE(nn.Module):
             self.normalizer_statistics = normalizer_statistics.__dict__
         else:
             self.normalizer_statistics = normalizer_statistics
-
-        self.use_mel_scale = use_mel_scale
-        if self.use_mel_scale:
-            self.mel_scale_lower_edge_hertz = mel_scale_lower_edge_hertz
-            self.mel_scale_upper_edge_hertz = mel_scale_upper_edge_hertz
-            self.mel_scale_break_frequency_hertz = (
-                mel_scale_break_frequency_hertz)
 
         self._instantiation_parameters = self.__dict__.copy()
 
@@ -606,62 +592,3 @@ class VQVAE(nn.Module):
         """Store the parameters used to create this instance as JSON"""
         with open(path, 'w') as f:
             json.dump(self._instantiation_parameters, f, indent=4)
-
-
-class InferenceVQVAE(object):
-    # TODO(theis): clean this up
-    # Maybe create a .from_vqvae(vqvae: VQVAE) -> SpectrogramHelper factory method in
-    # SpectrogramHelper and remove this altogether?
-    # But there remains the "need" for the sample_reconstructions method
-    # (which could be removed nonetheless, or moved to loader.py)
-    def __init__(self, vqvae: VQVAE, spectrogramsHelper: SpectrogramsHelper,
-                 device: str, hop_length: int, n_fft: int):
-        raise NotImplementedError("Deprecated")
-        self.vqvae = vqvae
-        self.device = device
-        self.hop_length = hop_length
-        self.n_fft = n_fft
-
-    @torch.no_grad()
-    def sample_reconstructions(self, dataloader):
-        self.vqvae.eval()
-
-        iterator = iter(dataloader)
-        mag_and_IF_batch, *_ = next(iterator)
-        with torch.no_grad():
-            reconstructed_mag_and_IF_batch, *_, id_t, id_b = (
-                self.vqvae.forward(
-                    mag_and_IF_batch.to(self.device)))
-
-        return mag_and_IF_batch, reconstructed_mag_and_IF_batch, id_t, id_b
-
-    @torch.no_grad()
-    def to_audio(self, spectrogram: torch.Tensor) -> torch.Tensor:
-        input_is_batch = True
-        if spectrogram.ndim == 3:
-            # a single sample was provided, wrap it as a batch
-            input_is_batch = False
-            spectrogram = spectrogram.unsqueeze(0)
-        elif spectrogram.ndim == 4:
-            pass
-        else:
-            raise ValueError("Input must either be a sample of shape "
-                             "[channels, freq, time] or a batch of such samples")
-
-        if self.vqvae.use_mel_scale:
-            to_audio = functools.partial(
-                GANsynth_pytorch.spectrograms_helper.to_audio,
-                lower_edge_hertz=self.vqvae.mel_scale_lower_edge_hertz,
-                upper_edge_hertz=self.vqvae.mel_scale_upper_edge_hertz,
-                mel_break_frequency_hertz=(
-                    self.vqvae.mel_scale_break_frequency_hertz),
-                )
-        else:
-            spec_to_audio = (GANsynth_pytorch.spectrograms_helper
-                             .logmag_and_IF_to_audio)
-
-        audio_batch = to_audio(spectrogram,
-                               hop_length=self.hop_length,
-                               n_fft=self.n_fft)
-
-        return audio_batch
