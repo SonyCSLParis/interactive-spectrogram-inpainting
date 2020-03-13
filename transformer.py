@@ -550,47 +550,87 @@ class VQNSynthTransformer(nn.Module):
         return input
 
     def inverse_zig_zag_reshaping_frequencies_first(self,
-                                                    input: torch.Tensor
+                                                    sequence: torch.Tensor
                                                     ) -> torch.Tensor:
         """Re-order a target tensor via a source-defined block ordering
         """
-        # patches of the target should be identified according to
-        # the position they occupy below their respective "source" patch
+        sequence_dim: Optional[int] = None
+        batch_dim, sequence_dim, embedding_dim = (0, 1, 2)
 
-        # slice along the time-axis
-        batch_dim, frequency_dim, time_dim, embedding_dim = (0, 2, 1, 3)
-        batch_size, _, embedding_size = input.shape
+        batch_size, sequence_size, embedding_size = sequence.shape
 
-        input = input.reshape(batch_size, self.target_num_channels,
-                              self.target_num_events, embedding_size)
-
-        input = input.transpose(1, 2)
-
-        input = input.reshape(batch_size, self.target_frequencies,
-                              self.target_duration, embedding_size)
-
-        # slice along the frequency-axis
-        frequency_slices_size = self.target_frequencies // self.source_num_channels
-        input = input.unfold(
-            frequency_dim,
+        # retrieve the frequency-axis slices
+        frequency_slices_size = (self.target_frequencies
+                                 // self.source_num_channels)
+        sequence = sequence.unfold(
+            sequence_dim,
             frequency_slices_size,
             frequency_slices_size)
+        # unfolding introduces a new dimension in innermost position
+        patch_frequency_dim = sequence.dim() - 1
+        # push-back embedding dimension as innermost dimension
+        sequence = sequence.transpose(patch_frequency_dim, embedding_dim)
+        patch_frequency_dim, embedding_dim = embedding_dim, patch_frequency_dim
 
-        time_slices_size = self.target_duration // self.source_num_events
-        input = input.unfold(
-            time_dim,
+        # retrieve the time-axis slices
+        time_slices_size = (self.target_duration
+                            // self.source_num_events)
+        sequence = sequence.unfold(
+            sequence_dim,
             time_slices_size,
             time_slices_size)
+        # unfolding introduces a new dimension in innermost position
+        patch_time_dim = sequence.dim() - 1
+        # push-back embedding dimension as innermost dimension
+        sequence = sequence.transpose(patch_time_dim, embedding_dim)
+        patch_time_dim, embedding_dim = embedding_dim, patch_time_dim
 
+        # transpose to index first along the frequency slices
+        sequence = sequence.transpose(patch_time_dim, patch_frequency_dim)
+        patch_time_dim, patch_frequency_dim = patch_frequency_dim, patch_time_dim
+
+        # retrieve source event slices
+        sequence = sequence.unfold(
+            sequence_dim,
+            self.source_num_channels,
+            self.source_num_channels
+        )
+        # unfolding introduces a new dimension in innermost position
+        source_channels_dim = sequence.dim() - 1
         # push back the embedding dimension as innermost dimension
-        input = input.permute(
-            batch_dim, time_dim, frequency_dim, 4, 5, embedding_dim)
+        sequence = sequence.transpose(source_channels_dim, embedding_dim)
+        source_channels_dim, embedding_dim = embedding_dim, source_channels_dim
+        source_events_dim = sequence_dim
+        sequence_dim = None
 
-        input = input.reshape(
+        # tranpose to index first along frequency slices, then along time slices,
+        # then along source events
+        sequence = sequence.permute(
+            batch_dim,
+            source_events_dim, source_channels_dim,
+            patch_time_dim, patch_frequency_dim,
+            embedding_dim)
+        (batch_dim, source_events_dim, source_channels_dim, patch_time_dim,
+         patch_frequency_dim, embedding_dim) = tuple(range(sequence.dim()))
+
+        # transpose to index in time-frequency order:
+        # with time decomposed into: patch time -> source events
+        # and frequency decomposed as: patch frequency -> source channel
+        # thus the full order is:
+        # patch time -> source events -> patch frequency -> source channel
+        sequence = sequence.permute(
+            batch_dim,
+            source_channels_dim, patch_frequency_dim,
+            source_events_dim, patch_time_dim,
+            embedding_dim)
+
+        codemap = sequence.reshape(
             batch_size, self.target_frequencies, self.target_duration,
             embedding_size)
-        input = input.transpose(1, 2)
-        return input
+
+        # return codemap in frequency-first format
+        codemap = codemap.transpose(1, 2)
+        return codemap
 
     def prepare_data(self, input: torch.Tensor, kind: Optional[str] = None,
                      class_conditioning: Mapping[str, torch.Tensor] = {},
@@ -848,7 +888,7 @@ class VQNSynthTransformer(nn.Module):
         if not self.predict_low_frequencies_first:
             raise NotImplementedError
 
-        sequence_dimensions = sequence.ndim
+        sequence_dimensions = sequence.dim()
         if sequence_dimensions == 2:
             sequence = sequence.unsqueeze(-1)
             is_logits = False
