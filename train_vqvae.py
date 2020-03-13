@@ -17,7 +17,7 @@ from torch.utils.data import DataLoader
 from torchvision import datasets, transforms, utils
 from torch.utils.tensorboard.writer import SummaryWriter
 
-from vqvae import VQVAE, InferenceVQVAE
+from vqvae import VQVAE
 from scheduler import CycleScheduler
 
 from GANsynth_pytorch.pytorch_nsynth_lib.nsynth import NSynth

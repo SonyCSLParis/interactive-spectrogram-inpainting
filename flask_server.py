@@ -1,20 +1,24 @@
-from vqvae import VQVAE, InferenceVQVAE
+from vqvae import VQVAE
 from transformer import VQNSynthTransformer
 from sample import (sample_model, make_conditioning_tensors,
                     ConditioningMap, make_conditioning_map)
 from dataset import LMDBDataset
-from GANsynth_pytorch.spectrograms_helpers import wavfile_to_spec_and_IF
+from GANsynth_pytorch.spectrograms_helpers import SpectrogramsHelper
+import utils as vqvae_utils
+from utils import expand_path
 
 import soundfile
-from typing import Union, Tuple, Mapping
+from typing import Union, Tuple, Mapping, Optional
 import click
 import tempfile
 import os
+import json
 import pathlib
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 import librosa
 import librosa.display
+from sklearn.preprocessing import LabelEncoder
 
 import torch
 
@@ -33,10 +37,6 @@ app = flask.Flask(__name__, static_folder='uploads')
 CORS(app)
 
 
-def expand_path(path: Union[str, pathlib.Path]) -> pathlib.Path:
-    return pathlib.Path(path).expanduser().absolute()
-
-
 # upload_directory = expand_path(pathlib.Path(tempfile.gettempdir())
 #                                / 'vqvae_uploads/')
 upload_directory = 'uploads/'
@@ -47,17 +47,17 @@ ALLOWED_EXTENSIONS = {'wav'}
 wav_response_headers = {"Content-Type": "audio/wav"
                         }
 
-vqvae = None
-inference_vqvae = None
-transformer_top = None
-transformer_bottom = None
-label_encoders_per_modality = None
-FS_HZ = None
-HOP_LENGTH = None
-DEVICE = None
-SOUND_DURATION_S = None
-SPECTROGRAMS_UPSAMPLING_FACTOR = None
-USE_LOCAL_CONDITIONING = None
+vqvae: Optional[VQVAE] = None
+spectrograms_helper: Optional[SpectrogramsHelper] = None
+transformer_top: Optional[VQNSynthTransformer] = None
+transformer_bottom: Optional[VQNSynthTransformer] = None
+label_encoders_per_modality: Optional[Mapping[str, LabelEncoder]] = None
+FS_HZ: Optional[int] = None
+HOP_LENGTH: Optional[int] = None
+DEVICE: Optional[str] = None
+SOUND_DURATION_S: Optional[float] = None
+SPECTROGRAMS_UPSAMPLING_FACTOR: Optional[int] = None
+USE_LOCAL_CONDITIONING: Optional[bool] = None
 
 _num_iterations = None
 _sequence_length_ticks = None
@@ -95,7 +95,9 @@ def make_spectrogram_image(spectrogram: torch.Tensor,
         output_path (str): the path where the image was written
     """
     global FS_HZ
+    assert FS_HZ is not None
     global HOP_LENGTH
+    assert HOP_LENGTH is not None
     # fig, ax = plt.subplots(figsize=(12, 8))
     # ax.set_axis_off()
     fig, ax = full_frame(width=12, height=8)
@@ -126,7 +128,9 @@ def make_spectrogram_image(spectrogram: torch.Tensor,
 
 @torch.no_grad()
 @click.command()
-@click.option('--vqvae_parameters_path', type=pathlib.Path,
+@click.option('--vqvae_model_parameters_path', type=pathlib.Path,
+              required=True)
+@click.option('--vqvae_training_parameters_path', type=pathlib.Path,
               required=True)
 @click.option('--vqvae_weights_path', type=pathlib.Path,
               required=True)
@@ -156,22 +160,23 @@ def make_spectrogram_image(spectrogram: torch.Tensor,
               default='cuda')
 @click.option('--port', default=5000,
               help='port to serve on')
-def init_app(vqvae_parameters_path,
-             vqvae_weights_path,
-             prediction_top_parameters_path,
-             prediction_top_weights_path,
-             prediction_bottom_parameters_path,
-             prediction_bottom_weights_path,
-             database_path_for_label_encoders,
-             fs_hz,
-             sound_duration_s,
-             num_iterations,
-             n_fft,
-             hop_length,
-             spectrograms_upsampling_factor,
-             use_local_conditioning,
-             device,
-             port,
+def init_app(vqvae_model_parameters_path: pathlib.Path,
+             vqvae_training_parameters_path: pathlib.Path,
+             vqvae_weights_path: pathlib.Path,
+             prediction_top_parameters_path: pathlib.Path,
+             prediction_top_weights_path: pathlib.Path,
+             prediction_bottom_parameters_path: pathlib.Path,
+             prediction_bottom_weights_path: pathlib.Path,
+             database_path_for_label_encoders: pathlib.Path,
+             fs_hz: int,
+             sound_duration_s: float,
+             num_iterations: int,
+             n_fft: int,
+             hop_length: int,
+             spectrograms_upsampling_factor: int,
+             use_local_conditioning: bool,
+             device: str,
+             port: int,
              ):
     global FS_HZ
     global HOP_LENGTH
@@ -189,15 +194,21 @@ def init_app(vqvae_parameters_path,
     global vqvae
     print("Load VQ-VAE")
     vqvae = VQVAE.from_parameters_and_weights(
-        expand_path(vqvae_parameters_path),
+        expand_path(vqvae_model_parameters_path),
         expand_path(vqvae_weights_path),
         device=DEVICE
     )
     vqvae.eval().to(DEVICE)
-    global inference_vqvae
-    inference_vqvae = InferenceVQVAE(vqvae, device=device,
-                                     hop_length=HOP_LENGTH,
-                                     n_fft=n_fft)
+
+    global spectrograms_helper
+    VQVAE_TRAINING_PARAMETERS_PATH = expand_path(
+        vqvae_training_parameters_path)
+    # retrieve n_fft, hop length, window length parameters...
+    with open(VQVAE_TRAINING_PARAMETERS_PATH, 'r') as f:
+        vqvae_training_parameters = json.load(f)
+    spectrograms_helper = vqvae_utils.get_spectrograms_helper(
+        device=device, **vqvae_training_parameters)
+    spectrograms_helper.to(device)
 
     global transformer_top
     print("Load top-layer Transformer")
@@ -262,9 +273,13 @@ def generate():
         - Response: a new, generated sound
     """
     global transformer_top
+    assert transformer_top is not None
     global transformer_bottom
+    assert transformer_bottom is not None
     global label_encoders_per_modality
+    assert label_encoders_per_modality is not none
     global DEVICE
+    assert DEVICE is not None
 
     temperature = float(request.args.get('temperature'))
     pitch = int(request.args.get('pitch'))
@@ -321,7 +336,9 @@ def generate():
 @app.route('/test-generate', methods=['GET', 'POST'])
 def test_generate():
     global transformer_top
+    assert transformer_top is not None
     global transformer_bottom
+    assert transformer_bottom is not None
 
     pitch = int(request.args.get('pitch'))
     instrument_family_str = str(request.args.get('instrument_family_str'))
@@ -356,9 +373,14 @@ def test_generate():
 @app.route('/analyze-audio', methods=['POST'])
 def audio_to_codes():
     global vqvae
+    assert vqvae is not None
+    global spectrograms_helper
     global DEVICE
+    assert DEVICE is not None
     global FS_HZ
+    assert FS_HZ is not None
     global SOUND_DURATION_S
+    assert SOUND_DURATION_S is not None
 
     pitch = int(request.args.get('pitch'))
     instrument_family_str = str(request.args.get('instrument_family_str'))
@@ -371,9 +393,8 @@ def audio_to_codes():
     with tempfile.NamedTemporaryFile(
             'w+b', suffix=request.files['audio'].filename) as f:
         request.files['audio'].save(f)
-        spec_and_IF = wavfile_to_spec_and_IF(
-            f.name, FS_HZ, duration_s=SOUND_DURATION_S
-        ).to(DEVICE)
+        spec_and_IF = spectrograms_helper.from_wavfile(
+            f.name, duration_s=SOUND_DURATION_S).to(DEVICE)
 
     _, _, _, top_code, bottom_code, *_ = vqvae.encode(spec_and_IF)
 
@@ -404,10 +425,15 @@ def timerange_change():
         - Response:
     """
     global transformer_top
+    assert transformer_top is not None
     global transformer_bottom
+    assert transformer_bottom is not None
     global label_encoders_per_modality
+    assert label_encoders_per_modality is not none
     global DEVICE
+    assert DEVICE is not None
     global USE_LOCAL_CONDITIONING
+    assert USE_LOCAL_CONDITIONING is not None
 
     layer = str(request.args.get('layer'))
     temperature = float(request.args.get('temperature'))
@@ -522,9 +548,13 @@ def timerange_change():
 @app.route('/erase', methods=['POST'])
 def erase():
     global transformer_top
+    assert transformer_top is not None
     global transformer_bottom
+    assert transformer_bottom is not None
     global label_encoders_per_modality
+    assert label_encoders_per_modality is not none
     global DEVICE
+    assert DEVICE is not None
 
     layer = str(request.args.get('layer'))
     amplitude = float(request.args.get('eraser_amplitude'))
@@ -564,7 +594,9 @@ def erase():
 def parse_codes(request) -> Tuple[torch.LongTensor,
                                   torch.LongTensor]:
     global transformer_top
+    assert transformer_top is not None
     global transformer_bottom
+    assert transformer_bottom is not None
 
     json_data = request.get_json(force=True)
 
@@ -590,8 +622,11 @@ def parse_conditioning(request) -> Tuple[torch.LongTensor,
                                          Mapping[str, ConditioningMap],
                                          ]:
     global transformer_top
+    assert transformer_top is not None
     global transformer_bottom
+    assert transformer_bottom is not None
     global label_encoders_per_modality
+    assert label_encoders_per_modality is not None
 
     json_data = request.get_json(force=True)
 
@@ -628,8 +663,9 @@ def make_response(top_code: torch.Tensor,
                   class_conditioning_bottom_map: Mapping[str, ConditioningMap],
                   send_files: bool = False):
     global transformer_top
+    assert transformer_top is not None
     global transformer_bottom
-    global inference_vqvae
+    assert transformer_bottom is not None
 
     # flatten codes for sending as lists
     top_code_flattened = transformer_top.flatten_map(
@@ -646,15 +682,17 @@ def make_response(top_code: torch.Tensor,
 
 @app.route('/get-audio', methods=['POST'])
 def codes_to_audio_response():
-    global inference_vqvae
-
+    global vqvae
+    assert vqvae is not None
+    global spectrograms_helper
+    assert spectrograms_helper is not None
     top_code, bottom_code = parse_codes(request)
 
     logmelspectrogram_and_IF = vqvae.decode_code(top_code,
                                                  bottom_code)
 
     # convert to audio and write to file
-    audio = inference_vqvae.mag_and_IF_to_audio(logmelspectrogram_and_IF)[0]
+    audio = spectrograms_helper.to_audio(logmelspectrogram_and_IF)[0]
     audio_path = write_audio_to_file(audio)
 
     return flask.send_file(audio_path, mimetype="audio/wav",
@@ -664,8 +702,8 @@ def codes_to_audio_response():
 
 @app.route('/get-spectrogram-image', methods=['POST'])
 def codes_to_spectrogram_image_response():
-    global inference_vqvae
     global SPECTROGRAMS_UPSAMPLING_FACTOR
+    assert SPECTROGRAMS_UPSAMPLING_FACTOR is not None
 
     top_code, bottom_code = parse_codes(request)
 
@@ -688,6 +726,7 @@ def write_audio_to_file(audio: torch.Tensor):
     """Generate and send MP3 file
     """
     global FS_HZ
+    assert FS_HZ is not None
     audio_extension = '.wav'
     # audio_path = tempfile.mktemp() + audio_extension
     audio_path = upload_directory + 'audio.wav'

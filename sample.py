@@ -19,10 +19,10 @@ from torch.nn import functional as F
 from torchvision.utils import save_image
 
 from dataset import LMDBDataset
-from vqvae import VQVAE, InferenceVQVAE
+from vqvae import VQVAE
 from pixelsnail import PixelSNAIL
 from transformer import VQNSynthTransformer
-from GANsynth_pytorch.spectrograms_helpers import wavfile_to_spec_and_IF
+import utils as vqvae_utils
 
 if torch.cuda.is_available():
     torch.set_default_tensor_type(torch.cuda.FloatTensor)
@@ -323,7 +323,8 @@ if __name__ == '__main__':
     parser.add_argument('--model_type_bottom', type=str,
                         choices=['PixelSNAIL', 'Transformer'],
                         default='PixelSNAIL')
-    parser.add_argument('--vqvae_parameters_path', type=str, required=True)
+    parser.add_argument('--vqvae_training_parameters_path', type=str, required=True)
+    parser.add_argument('--vqvae_model_parameters_path', type=str, required=True)
     parser.add_argument('--vqvae_weights_path', type=str, required=True)
     parser.add_argument('--prediction_top_parameters_path', type=str,
                         required=True)
@@ -390,7 +391,7 @@ if __name__ == '__main__':
             f"Unexpected value {args.model_type_bottom} for option model_type_bottom")
 
     model_vqvae = VQVAE.from_parameters_and_weights(
-        expand_path(args.vqvae_parameters_path),
+        expand_path(args.vqvae_model_parameters_path),
         expand_path(args.vqvae_weights_path),
         device=device
         ).to(device).eval()
@@ -404,6 +405,14 @@ if __name__ == '__main__':
         expand_path(args.prediction_bottom_weights_path),
         device=device
         ).to(device).eval()
+
+    VQVAE_TRAINING_PARAMETERS_PATH = expand_path(
+        args.vqvae_training_parameters_path)
+    # retrieve n_fft, hop length, window length parameters...
+    with open(VQVAE_TRAINING_PARAMETERS_PATH, 'r') as f:
+        vqvae_training_parameters = json.load(f)
+    spectrograms_helper = vqvae_utils.get_spectrograms_helper(
+        device=device, **vqvae_training_parameters)
 
     def to_dictionary(key_value_list: Iterable[Tuple[any, any]]
                       ) -> Mapping[any, any]:
@@ -444,7 +453,7 @@ if __name__ == '__main__':
     with torch.no_grad():
         initial_code = None
         if args.condition_top_audio_path is not None:
-            condition_mel_spec_and_IF = wavfile_to_spec_and_IF(
+            condition_mel_spec_and_IF = spectrograms_helper.from_wavfile(
                 args.condition_top_audio_path)
 
             (_, _, _, condition_code_top, condition_code_bottom,
@@ -454,7 +463,7 @@ if __name__ == '__main__':
             top_code = condition_code_top.repeat(args.batch_size, 1, 1)
             initial_code = condition_code_bottom.repeat(args.batch_size, 1, 1)
         elif args.constraint_top_audio_path is not None:
-            constraint_mel_spec_and_IF = wavfile_to_spec_and_IF(
+            constraint_mel_spec_and_IF = spectrograms_helper.from_wavfile(
                 args.constraint_top_audio_path)
 
             (_, _, _, constraint_code_top, *_) = model_vqvae.encode(
@@ -503,10 +512,6 @@ if __name__ == '__main__':
                                  model_top.n_class,
                                  model_bottom.n_class)
 
-    inference_vqvae = InferenceVQVAE(model_vqvae, device,
-                                     hop_length=args.hop_length,
-                                     n_fft=args.n_fft)
-
     condition_top_audio = None
     if args.condition_top_audio_path is not None:
         CONDITION_TOP_AUDIO_PATH = expand_path(args.condition_top_audio_path)
@@ -523,7 +528,7 @@ if __name__ == '__main__':
     def make_audio(mag_and_IF_batch: torch.Tensor,
                    condition_audio: Optional[np.ndarray],
                    normalize: bool = False) -> np.ndarray:
-        audio_batch = inference_vqvae.mag_and_IF_to_audio(mag_and_IF_batch)
+        audio_batch = spectrograms_helper.to_audio(mag_and_IF_batch)
 
         if normalize:
             normalized_audio_batch = (

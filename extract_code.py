@@ -16,7 +16,7 @@ import lmdb
 from tqdm import tqdm
 
 from dataset import ImageFileDataset, CodeRow, LMDBDataset
-from vqvae import InferenceVQVAE, VQVAE
+from vqvae import VQVAE
 import utils as vqvae_utils
 from utils import expand_path
 
@@ -99,11 +99,12 @@ if __name__ == '__main__':
 
     MAIN_DIR = pathlib.Path(args.main_output_dir)
 
-    VQVAE_WEIGHTS_PATH = (
-        pathlib.Path(args.vqvae_weights_path).expanduser().absolute())
-    VQVAE_MODEL_PARAMETERS_PATH = (
-        pathlib.Path(args.vqvae_model_parameters_path).expanduser().absolute())
+    VQVAE_WEIGHTS_PATH = expand_path(args.vqvae_weights_path)
+    VQVAE_MODEL_PARAMETERS_PATH = expand_path(args.vqvae_model_parameters_path)
+    VQVAE_TRAINING_PARAMETERS_PATH = expand_path(
+        args.vqvae_training_parameters_path)
     assert (VQVAE_WEIGHTS_PATH.is_file()
+            and VQVAE_MODEL_PARAMETERS_PATH.is_file()
             and VQVAE_MODEL_PARAMETERS_PATH.is_file())
     # folder containing the vqvae weights is the ID
     vqvae_id = VQVAE_WEIGHTS_PATH.parts[-2]
@@ -131,18 +132,15 @@ if __name__ == '__main__':
                 "otherwise the outputs will overwrite one another"
                 )
 
-    if args.vqvae_training_parameters_path is not None:
-        VQVAE_TRAINING_PARAMETERS_PATH = pathlib.Path(
-            args.vqvae_training_parameters_path)
-        with open(VQVAE_TRAINING_PARAMETERS_PATH, 'r') as f:
-            vqvae_training_parameters = json.load(f)
-
     vqvae = VQVAE.from_parameters_and_weights(
         VQVAE_MODEL_PARAMETERS_PATH,
         VQVAE_WEIGHTS_PATH)
     vqvae.to(device)
     vqvae.eval()
 
+    # retrieve n_fft, hop length, window length parameters...
+    with open(VQVAE_TRAINING_PARAMETERS_PATH, 'r') as f:
+        vqvae_training_parameters = json.load(f)
     spectrograms_helper = vqvae_utils.get_spectrograms_helper(
         device=device, **vqvae_training_parameters)
 
