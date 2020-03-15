@@ -384,6 +384,9 @@ class VQVAE(nn.Module):
         corruption_weights: Mapping[str, Optional[List[float]]] = {'top': None,
                                                                    'bottom': None},
     ):
+        if decoder_output_activation is not None:
+            raise NotImplementedError("TODO")
+
         # store instantiation parameters
         self.in_channel = in_channel
         self.num_hidden_channels = num_hidden_channels
@@ -397,6 +400,7 @@ class VQVAE(nn.Module):
         self.resolution_factors = resolution_factors
         self.embeddings_initial_variance = embeddings_initial_variance
         self.output_activation_type = output_activation_type
+        self.decoder_output_activation = decoder_output_activation
         self.corruption_weights = corruption_weights
         self.output_spectrogram_min_magnitude = (
             output_spectrogram_min_magnitude)
@@ -496,7 +500,7 @@ class VQVAE(nn.Module):
                 channel_index=0
             )
         else:
-            assert self.output_activation is None, (
+            assert self.output_activation_type is None, (
                 "Unexpected output activation type")
 
         self.output_transform = None

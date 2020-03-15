@@ -3,7 +3,7 @@ from transformer import VQNSynthTransformer
 from sample import (sample_model, make_conditioning_tensors,
                     ConditioningMap, make_conditioning_map)
 from dataset import LMDBDataset
-from GANsynth_pytorch.spectrograms_helpers import SpectrogramsHelper
+from GANsynth_pytorch.spectrograms_helper import SpectrogramsHelper
 import utils as vqvae_utils
 from utils import expand_path
 
@@ -277,7 +277,7 @@ def generate():
     global transformer_bottom
     assert transformer_bottom is not None
     global label_encoders_per_modality
-    assert label_encoders_per_modality is not none
+    assert label_encoders_per_modality is not None
     global DEVICE
     assert DEVICE is not None
 
@@ -429,7 +429,7 @@ def timerange_change():
     global transformer_bottom
     assert transformer_bottom is not None
     global label_encoders_per_modality
-    assert label_encoders_per_modality is not none
+    assert label_encoders_per_modality is not None
     global DEVICE
     assert DEVICE is not None
     global USE_LOCAL_CONDITIONING
@@ -511,8 +511,8 @@ def timerange_change():
         )
 
         generation_mask_bottom_batched = (
-            generation_mask_batched.repeat_interleave(2, 1)
-            .repeat_interleave(2, 2)
+            generation_mask_batched.repeat_interleave(4, 1)
+            .repeat_interleave(4, 2)
         )
         bottom_code_resampled = sample_model(
             model=transformer_bottom,
@@ -552,7 +552,7 @@ def erase():
     global transformer_bottom
     assert transformer_bottom is not None
     global label_encoders_per_modality
-    assert label_encoders_per_modality is not none
+    assert label_encoders_per_modality is not None
     global DEVICE
     assert DEVICE is not None
 
