@@ -510,9 +510,11 @@ def timerange_change():
             mask=generation_mask_batched
         )
 
+        upsampling_f = transformer_bottom.shape[0] // transformer_top.shape[0]
+        upsampling_t = transformer_bottom.shape[1] // transformer_top.shape[1]
         generation_mask_bottom_batched = (
-            generation_mask_batched.repeat_interleave(4, 1)
-            .repeat_interleave(4, 2)
+            generation_mask_batched.repeat_interleave(upsampling_f, 1)
+            .repeat_interleave(upsampling_t, 2)
         )
         bottom_code_resampled = sample_model(
             model=transformer_bottom,
