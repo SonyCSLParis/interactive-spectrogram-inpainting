@@ -268,19 +268,20 @@ class VQNSynthTransformer(nn.Module):
         self.source_embed = torch.nn.Embedding(self.n_class_in,
                                                self.embeddings_dim)
 
-        embeddings_effective_dim = (self.d_model
-                                    - self.positional_embeddings_dim)
+        self.embeddings_effective_dim = (self.d_model
+                                         - self.positional_embeddings_dim)
         if self.positional_class_conditioning:
-            embeddings_effective_dim -= self.class_conditioning_total_dim
+            self.embeddings_effective_dim -= self.class_conditioning_total_dim
+
         self.source_embeddings_linear = nn.Linear(
             self.embeddings_dim,
-            embeddings_effective_dim
+            self.embeddings_effective_dim
             )
 
         if self.conditional_model:
             self.target_embeddings_linear = nn.Linear(
                 self.embeddings_dim,
-                embeddings_effective_dim)
+                self.embeddings_effective_dim)
 
             self.target_embed = torch.nn.Embedding(self.n_class_out,
                                                    self.embeddings_dim)
@@ -964,10 +965,10 @@ class VQNSynthTransformer(nn.Module):
         (batch_dim, sequence_dim) = (1, 0)
 
         memory_mask = None
-        if self.use_identity_memory_mask:
-            memory_mask = self.identity_memory_mask
 
         if self.conditional_model:
+            if self.use_identity_memory_mask:
+                memory_mask = self.identity_memory_mask
             output_sequence = self.transformer(
                 time_major_source_sequence,
                 time_major_target_sequence,
