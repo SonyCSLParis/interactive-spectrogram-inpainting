@@ -623,10 +623,6 @@ def parse_conditioning(request) -> Tuple[torch.LongTensor,
                                          Mapping[str, ConditioningMap],
                                          Mapping[str, ConditioningMap],
                                          ]:
-    global transformer_top
-    assert transformer_top is not None
-    global transformer_bottom
-    assert transformer_bottom is not None
     global label_encoders_per_modality
     assert label_encoders_per_modality is not None
 
@@ -639,10 +635,10 @@ def parse_conditioning(request) -> Tuple[torch.LongTensor,
     conditioning_bottom = json_data['bottom_conditioning']
 
     class_conditioning_top_map = make_conditioning_map(
-        json_data['top_conditioning'],
+        conditioning_top,
         label_encoders_per_modality)
     class_conditioning_bottom_map = make_conditioning_map(
-        json_data['bottom_conditioning'],
+        conditioning_bottom,
         label_encoders_per_modality)
 
     return (class_conditioning_top_map, class_conditioning_bottom_map,
