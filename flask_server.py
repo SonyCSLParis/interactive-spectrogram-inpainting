@@ -392,7 +392,7 @@ def audio_to_codes():
 
     with tempfile.NamedTemporaryFile(
             'w+b', suffix=request.files['audio'].filename) as f:
-        request.files['audio'].save(f)
+        request.files['audio'].save(f.name)
         spec_and_IF = spectrograms_helper.from_wavfile(
             f.name, duration_s=SOUND_DURATION_S).to(DEVICE)
 
