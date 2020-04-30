@@ -148,7 +148,7 @@ def run_model(args, epoch: int, loader: DataLoader, model: VQNSynthTransformer,
             parallel_model.zero_grad()
 
         class_conditioning_tensors = {
-            condition_name: condition_tensor.to(device)
+            condition_name: condition_tensor.to(device, non_blocking=True)
             for condition_name, condition_tensor
             in class_conditioning_tensors.items()}
 
@@ -167,7 +167,7 @@ def run_model(args, epoch: int, loader: DataLoader, model: VQNSynthTransformer,
                 for key, tensor in class_conditioning_tensors.items()
             }
 
-        top = top.to(device)
+        top = top.to(device, non_blocking=True)
 
         if args.hier == 'top':
             if model.self_conditional_model:
@@ -211,7 +211,7 @@ def run_model(args, epoch: int, loader: DataLoader, model: VQNSynthTransformer,
 
         elif args.hier == 'bottom':
             kind = 'target'
-            bottom = bottom.to(device)
+            bottom = bottom.to(device, non_blocking=True)
             target = bottom
             source_sequence, target_sequence = (
                 model.to_sequences(
@@ -487,6 +487,7 @@ if __name__ == '__main__':
         torch.utils.data.Subset(dataset, range(num_training_samples)),
         batch_size=args.batch_size, shuffle=True,
         num_workers=args.num_workers, drop_last=False,
+        pin_memory=True,
     )
     class_conditioning_num_classes_per_modality = {
         modality: len(label_encoder.classes_)
