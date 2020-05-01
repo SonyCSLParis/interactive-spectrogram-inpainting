@@ -136,12 +136,12 @@ def run_model(args, epoch: int, loader: DataLoader, model: VQNSynthTransformer,
     if model.self_conditional_model:
         satisfied_constraints_total = 0
 
-    if is_training:
-        model = model.train()
-    else:
-        model = model.eval()
-
     parallel_model = nn.DataParallel(model)
+
+    if is_training:
+        parallel_model = parallel_model.train()
+    else:
+        parallel_model = parallel_model.eval()
 
     for batch_index, (top, bottom, class_conditioning_tensors) in enumerate(tqdm_loader):
         if is_training:
@@ -246,10 +246,10 @@ def run_model(args, epoch: int, loader: DataLoader, model: VQNSynthTransformer,
             loss = criterion(time_frequency_logits_out, target)
 
         if is_training:
+            loss.backward()
+
             nn.utils.clip_grad_norm_(parallel_model.parameters(),
                                      clip_grad_norm)
-
-            loss.backward()
 
             optimizer.step()
             if scheduler is not None:
