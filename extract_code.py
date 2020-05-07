@@ -20,8 +20,7 @@ from vqvae import VQVAE
 import utils as vqvae_utils
 from utils import expand_path
 
-from GANsynth_pytorch.pytorch_nsynth_lib.nsynth import (
-    NSynth)
+from pytorch_nsynth import NSynth
 from GANsynth_pytorch.loader import WavToSpectrogramDataLoader
 
 # HOP_LENGTH = 512

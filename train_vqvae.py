@@ -20,7 +20,7 @@ from torch.utils.tensorboard.writer import SummaryWriter
 from vqvae import VQVAE
 from scheduler import CycleScheduler
 
-from GANsynth_pytorch.pytorch_nsynth_lib.nsynth import NSynth
+from pytorch_nsynth import NSynth
 from GANsynth_pytorch.spectrograms_helper import (SpectrogramsHelper,
                                                   MelSpectrogramsHelper)
 from GANsynth_pytorch.loader import (WavToSpectrogramDataLoader,
