@@ -7,7 +7,7 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
-from HT.transformer_custom import (
+from VQCPCB.transformer.transformer_custom import (
     TransformerCustom, TransformerDecoderCustom, TransformerEncoderCustom,
     TransformerDecoderLayerCustom, TransformerEncoderLayerCustom)
 
