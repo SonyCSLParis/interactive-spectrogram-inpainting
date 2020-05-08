@@ -20,8 +20,7 @@ from vqvae import VQVAE
 import utils as vqvae_utils
 from utils import expand_path
 
-from GANsynth_pytorch.pytorch_nsynth_lib.nsynth import (
-    NSynth)
+from pytorch_nsynth import NSynth
 from GANsynth_pytorch.loader import WavToSpectrogramDataLoader
 
 # HOP_LENGTH = 512
@@ -31,7 +30,7 @@ from GANsynth_pytorch.loader import WavToSpectrogramDataLoader
 
 def extract(lmdb_env, loader: WavToSpectrogramDataLoader,
             model: VQVAE,
-            device: str, dataset: str,
+            device: str,
             label_encoders: Mapping[str, LabelEncoder] = {}):
     index = 0
 
@@ -79,7 +78,6 @@ if __name__ == '__main__':
     parser.add_argument('--main_output_dir', type=str, required=True)
     parser.add_argument('--categorical_fields', type=str, nargs='*',
                         default=['instrument_family_str', 'pitch'])
-    parser.add_argument('--checking_samples_dir', type=str, default=None)
     parser.add_argument('--batch_size', type=int, default=64)
     parser.add_argument('--num_workers', type=int, default=4,
                         help='Number of worker processes for the Dataloaders')
@@ -184,36 +182,37 @@ if __name__ == '__main__':
 
             env = lmdb.open(str(lmdb_path), map_size=map_size)
             with torch.no_grad():
-                extract(env, loader, vqvae, device, args.dataset,
+                print("Start extraction for dataset", dataset_name)
+                extract(env, loader, vqvae, device,
                         label_encoders=label_encoders)
 
-        if args.checking_samples_dir:
-            # check extracted codes by saving to disk the audio for a batch
-            # of re-synthesized codemaps
-            codes_dataset = LMDBDataset(
-                str(lmdb_path),
-                classes_for_conditioning=args.categorical_fields)
-            codes_loader = DataLoader(codes_dataset, batch_size=8,
-                                      shuffle=True)
-            with torch.no_grad():
-                codes_top_sample, codes_bottom_sample, attributes = (
-                    next(iter(codes_loader)))
-                decoded_sample = vqvae.decode_code(
-                    codes_top_sample.to(device),
-                    codes_bottom_sample.to(device))
+        print("Start sanity-check for dataset", dataset_name)
+        # check extracted codes by saving to disk the audio for a batch
+        # of re-synthesized codemaps
+        codes_dataset = LMDBDataset(
+            str(lmdb_path),
+            classes_for_conditioning=args.categorical_fields)
+        codes_loader = DataLoader(codes_dataset, batch_size=8,
+                                  shuffle=True)
+        with torch.no_grad():
+            codes_top_sample, codes_bottom_sample, attributes = (
+                next(iter(codes_loader)))
+            decoded_sample = vqvae.decode_code(
+                codes_top_sample.to(device),
+                codes_bottom_sample.to(device))
 
-                def make_audio(mag_and_IF_batch: torch.Tensor) -> np.ndarray:
-                    audio_batch = spectrograms_helper.to_audio(
-                        mag_and_IF_batch)
-                    audio_mono_concatenated = (audio_batch
-                                               .flatten().cpu().numpy())
-                    return audio_mono_concatenated
+            def make_audio(mag_and_IF_batch: torch.Tensor) -> np.ndarray:
+                audio_batch = spectrograms_helper.to_audio(
+                    mag_and_IF_batch)
+                audio_mono_concatenated = (audio_batch
+                                            .flatten().cpu().numpy())
+                return audio_mono_concatenated
 
-                os.makedirs(args.checking_samples_dir, exist_ok=True)
-
-                audio_sample_path = os.path.join(
-                    args.checking_samples_dir,
-                    f'vqvae_codes_extraction_samples.wav')
-                soundfile.write(audio_sample_path,
-                                make_audio(decoded_sample),
-                                samplerate=vqvae_training_parameters['fs_hz'])
+            audio_sample_path = os.path.join(
+                lmdb_path,
+                f'vqvae_codes_extraction_samples.wav')
+            soundfile.write(audio_sample_path,
+                            make_audio(decoded_sample),
+                            samplerate=vqvae_training_parameters['fs_hz'])
+            print("Stored sanity-check decoding of stored codes at",
+                  audio_sample_path)
