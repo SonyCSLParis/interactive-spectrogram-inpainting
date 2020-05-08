@@ -234,13 +234,15 @@ def sample_model(model: PixelSNAIL, device: Union[torch.device, str],
             model.make_condition_sequence(class_conditioning_tensors)
             )
 
+    memory = None
     for i in tqdm(range(sequence_duration)):
         if not mask[i]:
             continue
 
-        logits_sequence_out, _ = parallel_model(
+        logits_sequence_out, memory = parallel_model(
             input_sequence, condition_sequence,
-            class_condition_sequence)
+            class_condition_sequence,
+            memory=memory)
 
         # apply temperature and filter logits
         logits_sequence_out = logits_sequence_out / temperature
@@ -262,6 +264,8 @@ def sample_model(model: PixelSNAIL, device: Union[torch.device, str],
             if model.self_conditional_model:
                 condition_sequence[:, i, :model.embeddings_effective_dim] = (
                     embedded_sample)
+                # condition sequence has changed, invalidates cached `memory`
+                memory = None
 
     codemap = model.to_time_frequency_map(codemap_as_sequence,
                                           kind=kind).long()

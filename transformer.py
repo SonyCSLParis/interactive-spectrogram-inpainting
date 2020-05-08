@@ -944,7 +944,7 @@ class VQNSynthTransformer(nn.Module):
     def forward(self, input: torch.Tensor,
                 condition: Optional[torch.Tensor] = None,
                 class_condition: Optional[torch.Tensor] = None,
-                cache: Optional[Mapping[str, torch.Tensor]] = None):
+                memory: Optional[torch.Tensor] = None):
         (batch_dim, sequence_dim) = (0, 1)
 
         if self.conditional_model:
@@ -966,24 +966,38 @@ class VQNSynthTransformer(nn.Module):
         (batch_dim, sequence_dim) = (1, 0)
 
         memory_mask = None
-
         if self.conditional_model:
             if self.use_identity_memory_mask:
                 memory_mask = self.identity_memory_mask
-            output_sequence = self.transformer(
+            if memory is None:
+                src_mask = (None if not self.self_conditional_model
+                            else self.causal_mask.t()  # anti-causal mask
+                            )
+                memory = self.transformer.encoder(
                 time_major_source_sequence,
+                    mask=src_mask)
+                if self.use_relative_transformer:
+                    memory, *encoder_attentions = memory
+
+            if time_major_class_condition_sequence is not None:
+                output_sequence = self.transformer.decoder(
                 time_major_target_sequence,
-                src_mask=(None if not self.self_conditional_model
-                          else self.causal_mask.t()  # anti-causal mask
-                          ),
+                    memory,
                 tgt_mask=self.causal_mask,
                 memory_mask=memory_mask,
                 condition=time_major_class_condition_sequence)
+            else:
+                output_sequence = self.transformer.decoder(
+                    time_major_target_sequence,
+                    memory,
+                    tgt_mask=self.causal_mask,
+                    memory_mask=memory_mask)
+
         else:
             output_sequence = self.transformer(time_major_source_sequence,
                                                mask=self.causal_mask)
         if self.use_relative_transformer:
-            output_sequence, *attentions = output_sequence
+            output_sequence, *decoder_attentions = output_sequence
 
         # transpose back to batch-major shape
         output_sequence = output_sequence.transpose(
@@ -993,7 +1007,7 @@ class VQNSynthTransformer(nn.Module):
         # convert outputs to class probabilities
         logits = self.project_transformer_outputs_to_logits(output_sequence)
 
-        return logits, None
+        return logits, memory
 
     @classmethod
     def from_parameters_and_weights(
