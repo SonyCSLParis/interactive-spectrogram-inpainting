@@ -76,6 +76,10 @@ class VQNSynthTransformer(nn.Module):
         use_lstm_DEBUG: bool = False,
         disable_start_symbol_DEBUG: bool = False,
     ):
+        if local_class_conditioning:
+            raise NotImplementedError(
+                "Depecrated in favor of positional class conditioning")
+
         self.shape = shape
 
         if self_conditional_model:
@@ -397,10 +401,7 @@ class VQNSynthTransformer(nn.Module):
                     num_channels_encoder=self.source_num_channels,
                     num_events_encoder=self.source_num_events,
                     num_channels_decoder=self.target_num_channels,
-                    num_events_decoder=self.target_num_events,
-                    conditional=self.local_class_conditioning,
-                    condition_embeddings_dim=(
-                        self.class_conditioning_total_dim_with_positions)
+                    num_events_decoder=self.target_num_events
                 )
 
                 custom_decoder = TransformerDecoderCustom(
