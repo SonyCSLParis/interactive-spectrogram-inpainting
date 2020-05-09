@@ -947,19 +947,21 @@ class VQNSynthTransformer(nn.Module):
                 memory: Optional[torch.Tensor] = None):
         (batch_dim, sequence_dim) = (0, 1)
 
+        target_sequence: Optional[torch.Tensor]
         if self.conditional_model:
             target_sequence = input
             source_sequence = condition
         else:
             source_sequence = input
             target_sequence = None
+        assert source_sequence is not None
 
         # transformer inputs are in time-major format
         time_major_source_sequence = source_sequence.transpose(0, 1)
-        if self.conditional_model:
+        if target_sequence is not None:
             time_major_target_sequence = target_sequence.transpose(0, 1)
 
-        if self.local_class_conditioning:
+        if class_condition is not None:
             time_major_class_condition_sequence = class_condition.transpose(0, 1)
         else:
             time_major_class_condition_sequence = None
