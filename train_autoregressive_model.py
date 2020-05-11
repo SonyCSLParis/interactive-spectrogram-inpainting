@@ -248,6 +248,7 @@ def run_model(args, epoch: int, loader: DataLoader, model: VQNSynthTransformer,
         if is_training:
             loss.backward()
 
+            if clip_grad_norm is not None:
             nn.utils.clip_grad_norm_(parallel_model.parameters(),
                                      clip_grad_norm)
 
