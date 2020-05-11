@@ -34,12 +34,21 @@ bottom_model_parameters = {
 }
 
 
-def check_equality(a: torch.Tensor, b: torch.Tensor,
+def check_equality_codemap(a: torch.Tensor, b: torch.Tensor,
                    kind: str, layer: str) -> None:
     if not torch.equal(a, b):
         print(layer, kind)
         print(a[0, 0])
         print(b[0, 0])
+        assert False
+
+
+def check_equality_flattened(a: torch.Tensor, b: torch.Tensor,
+                             kind: str, layer: str) -> None:
+    if not torch.equal(a, b):
+        print(layer, kind)
+        print(a[:, 0])
+        print(b)
         assert False
 
 
@@ -69,14 +78,14 @@ for condition_shape in [[32, 4], [64, 8], [128, 16]]:
                                           kind=kind)
     top_remapped = top_model.to_time_frequency_map(top_flattened,
                                                    kind=kind)
-    check_equality(top_codemap, top_remapped, kind, layer)
+    check_equality_codemap(top_codemap, top_remapped, kind, layer)
 
     kind = 'target'
     top_flattened_as_target = top_model.flatten_map(top_codemap,
                                                     kind=kind)
     top_remapped_as_target = top_model.to_time_frequency_map(
         top_flattened_as_target, kind=kind)
-    check_equality(top_codemap, top_remapped_as_target, kind, layer)
+    check_equality_codemap(top_codemap, top_remapped_as_target, kind, layer)
 
     layer = 'bottom'
     kind = 'target'
@@ -94,6 +103,24 @@ for condition_shape in [[32, 4], [64, 8], [128, 16]]:
 
         bottom_flattened = bottom_model.flatten_map(bottom_codemap,
                                                     kind=kind)
+        target_duration_per_patch = bottom_model.target_duration // bottom_model.source_duration
+        target_frequencies_per_patch = bottom_model.target_frequencies // bottom_model.source_frequencies
+
+        if bottom_model.predict_frequencies_first:
+            target_expected_first_patch = (
+                torch.arange(target_frequencies_per_patch).unsqueeze(1)
+                + (torch.arange(target_duration_per_patch).unsqueeze(0) * bottom_model.target_duration)
+                ).flatten()
+        else:
+            target_expected_first_patch = (
+                torch.arange(target_duration_per_patch).unsqueeze(0)
+                + (torch.arange(target_frequencies_per_patch).unsqueeze(1) * bottom_model.target_frequencies)
+                ).flatten()
+        check_equality_flattened(
+            bottom_flattened[0, :, 0][:bottom_model.target_events_per_source_patch],
+            target_expected_first_patch,
+            kind, layer)
+
         bottom_remapped = bottom_model.to_time_frequency_map(bottom_flattened,
                                                              kind=kind)
-        check_equality(bottom_codemap, bottom_remapped, kind, layer)
+        check_equality_codemap(bottom_codemap, bottom_remapped, kind, layer)

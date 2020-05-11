@@ -9,7 +9,8 @@ from torch.nn import functional as F
 
 from VQCPCB.transformer.transformer_custom import (
     TransformerCustom, TransformerDecoderCustom, TransformerEncoderCustom,
-    TransformerDecoderLayerCustom, TransformerEncoderLayerCustom)
+    TransformerDecoderLayerCustom, TransformerEncoderLayerCustom,
+    TransformerAlignedDecoderLayerCustom)
 
 
 class VQNSynthTransformer(nn.Module):
@@ -46,7 +47,7 @@ class VQNSynthTransformer(nn.Module):
         n_block: int,
         n_res_block: int,
         res_channel: int,
-        attention: bool = True,
+        attention: bool = True,  # TODO: remove this parameter
         dropout: float = 0.1,
         n_cond_res_block: int = 0,
         cond_res_channel: int = 0,
@@ -66,6 +67,7 @@ class VQNSynthTransformer(nn.Module):
         add_mask_token_to_symbols: bool = False,
         conditional_model: bool = False,
         self_conditional_model: bool = False,
+        use_aligned_decoder: bool = False,
         condition_shape: Optional[Tuple[int, int]] = None,
         conditional_model_num_encoder_layers: int = 6,
         conditional_model_num_decoder_layers: int = 8,
@@ -120,7 +122,6 @@ class VQNSynthTransformer(nn.Module):
         self.n_block = n_block
         self.n_res_block = n_res_block
         self.res_channel = res_channel
-        self.attention = attention
         self.dropout = dropout
         self.n_cond_res_block = n_cond_res_block
         self.cond_res_channel = cond_res_channel
@@ -148,6 +149,8 @@ class VQNSynthTransformer(nn.Module):
         else:
             self.unconditional_model_num_encoder_layers = unconditional_model_num_encoder_layers
             self.unconditional_model_nhead = unconditional_model_nhead
+
+        self.use_aligned_decoder = use_aligned_decoder
 
         self.use_lstm_DEBUG = use_lstm_DEBUG
         self.disable_start_symbol_DEBUG = disable_start_symbol_DEBUG
@@ -179,7 +182,7 @@ class VQNSynthTransformer(nn.Module):
 
         if self.use_relative_transformer:
             self.source_num_channels, self.source_num_events = (
-                self.source_frequencies, self.source_duration)
+                1, self.source_frequencies * self.source_duration)
 
         self.source_transformer_sequence_length = (
             self.source_frequencies * self.source_duration)
@@ -190,24 +193,24 @@ class VQNSynthTransformer(nn.Module):
             self.target_transformer_sequence_length = (
                 self.target_frequencies * self.target_duration)
 
+            self.target_events_per_source_patch = (
+                (self.target_duration // self.source_duration)
+                * (self.target_frequencies // self.source_frequencies)
+            )
             if self.use_relative_transformer:
-                if not self.self_conditional_model:
-                    self.target_events_per_source_patch = (
-                        (self.target_duration // self.source_duration)
-                        * (self.target_frequencies // self.source_frequencies)
-                    )
-                    self.target_num_channels = (
-                        self.target_events_per_source_patch)
+                # if not self.self_conditional_model:
+                self.target_num_channels = (
+                    self.target_events_per_source_patch)
 
-                    self.target_num_events = (
-                        self.target_transformer_sequence_length
-                        // self.target_num_channels)
-                    # downsampling_factor = (
-                    #     (self.shape[0]*self.shape[1])
-                    #     // (self.condition_shape[0]*self.condition_shape[1]))
-                else:
-                    self.target_num_channels = self.source_num_channels
-                    self.target_num_events = self.source_num_events
+                self.target_num_events = (
+                    self.target_transformer_sequence_length
+                    // self.target_num_channels)
+                # downsampling_factor = (
+                #     (self.shape[0]*self.shape[1])
+                #     // (self.condition_shape[0]*self.condition_shape[1]))
+                # else:
+                #     self.target_num_channels = self.source_num_channels
+                #     self.target_num_events = self.source_num_events
 
         if self.conditional_model:
             self.output_sizes = (-1, self.target_frequencies,
@@ -343,14 +346,40 @@ class VQNSynthTransformer(nn.Module):
             torch.randn((1, 1, self.source_start_symbol_dim))
         )
 
+        if self.use_relative_transformer:
+            self.source_num_events_with_maybe_start_symbol = (
+                self.source_num_events +
+                (1 if True or not self.conditional_model else 0)  # TODO remove this bypass!
+            )
+        self.source_transformer_sequence_length_with_start_symbol = (
+            self.source_transformer_sequence_length + 1
+        )
+
         if self.conditional_model:
             self.target_start_symbol_dim = self.d_model
             if self.positional_class_conditioning:
                 self.target_start_symbol_dim -= self.class_conditioning_total_dim
+            target_start_symbol_duration = self.target_events_per_source_patch
             self.target_start_symbol = nn.Parameter(
-                torch.randn((1, 1, self.target_start_symbol_dim))
+                torch.randn((1, target_start_symbol_duration,
+                             self.target_start_symbol_dim))
             )
 
+            if self.use_relative_transformer:
+                self.target_num_events_with_start_symbol = (
+                    self.target_num_events + 1
+                )
+                self.target_transformer_sequence_length_with_start_symbol = (
+                    self.target_num_events_with_start_symbol
+                    * self.target_num_channels
+                )
+            else:
+                self.target_transformer_sequence_length_with_start_symbol = (
+                    self.target_transformer_sequence_length + 1
+                )
+
+        self.transformer: Union[nn.Transformer, nn.TransformerEncoder,
+                                TransformerCustom, TransformerEncoderCustom]
         if self.use_lstm_DEBUG:
             raise NotImplementedError(
                 "TODO(theis), debug mode with simple LSTM layers")
@@ -382,7 +411,7 @@ class VQNSynthTransformer(nn.Module):
                 nhead=encoder_nhead,
                 attention_bias_type='relative_attention',
                 num_channels=self.source_num_channels,
-                num_events=self.source_num_events
+                num_events=self.source_num_events_with_maybe_start_symbol
             )
 
             relative_encoder = TransformerEncoderCustom(
@@ -393,15 +422,27 @@ class VQNSynthTransformer(nn.Module):
                 attention_bias_type_cross = 'relative_attention_target_source'
                 if self.use_identity_memory_mask:
                     attention_bias_type_cross = 'no_bias'
-                decoder_layer = TransformerDecoderLayerCustom(
+
+                decoder_layer_implementation: nn.Module
+                if (not self.self_conditional_model
+                        and self.use_aligned_decoder):
+                    # hierarchical decoder, use an aligned implementation
+                    # this computes cross-attention only with tokens from the source
+                    # that directly condition underlying tokens in the target
+                    decoder_layer_implementation = (
+                        TransformerAlignedDecoderLayerCustom)
+                else:
+                    decoder_layer_implementation = (
+                        TransformerDecoderLayerCustom)
+                decoder_layer = decoder_layer_implementation(
                     d_model=self.d_model,
                     nhead=self.conditional_model_nhead,
                     attention_bias_type_self='relative_attention',
                     attention_bias_type_cross=attention_bias_type_cross,
                     num_channels_encoder=self.source_num_channels,
-                    num_events_encoder=self.source_num_events,
+                    num_events_encoder=self.source_num_events_with_maybe_start_symbol,
                     num_channels_decoder=self.target_num_channels,
-                    num_events_decoder=self.target_num_events
+                    num_events_decoder=self.target_num_events_with_start_symbol
                 )
 
                 custom_decoder = TransformerDecoderCustom(
@@ -486,10 +527,12 @@ class VQNSynthTransformer(nn.Module):
         if self.conditional_model:
             # masking is applied only on the target, access is allowed to
             # all positions on the conditioning input
-            causal_mask_length = self.target_transformer_sequence_length
+            causal_mask_length = (
+                self.target_transformer_sequence_length_with_start_symbol)
         else:
             # apply causal mask to the input for the prediction task
-            causal_mask_length = self.source_transformer_sequence_length
+            causal_mask_length = (
+                self.source_transformer_sequence_length_with_start_symbol)
 
         mask = (torch.triu(torch.ones(causal_mask_length,
                                       causal_mask_length)) == 1
@@ -501,7 +544,7 @@ class VQNSynthTransformer(nn.Module):
     @property
     def identity_memory_mask(self) -> torch.Tensor:
         identity_memory_mask = (
-            torch.eye(self.source_transformer_sequence_length).float())
+            torch.eye(self.source_transformer_sequence_length_with_start_symbol).float())
         identity_memory_mask = (
             identity_memory_mask
             .masked_fill(identity_memory_mask == 0, float('-inf'))
@@ -526,14 +569,14 @@ class VQNSynthTransformer(nn.Module):
 
         batch_size, _, _, embedding_size = input.shape
 
-        time_slices_size = self.target_duration // self.source_num_events
+        time_slices_size = self.target_duration // self.source_duration
         input = input.unfold(
             time_dim,
             time_slices_size,
             time_slices_size)
 
         # slice along the frequency-axis
-        frequency_slices_size = self.target_frequencies // self.source_num_channels
+        frequency_slices_size = self.target_frequencies // self.source_frequencies
         input = input.unfold(
             frequency_dim,
             frequency_slices_size,
@@ -563,7 +606,7 @@ class VQNSynthTransformer(nn.Module):
 
         # retrieve the frequency-axis slices
         frequency_slices_size = (self.target_frequencies
-                                 // self.source_num_channels)
+                                 // self.source_frequencies)
         sequence = sequence.unfold(
             sequence_dim,
             frequency_slices_size,
@@ -575,8 +618,7 @@ class VQNSynthTransformer(nn.Module):
         patch_frequency_dim, embedding_dim = embedding_dim, patch_frequency_dim
 
         # retrieve the time-axis slices
-        time_slices_size = (self.target_duration
-                            // self.source_num_events)
+        time_slices_size = (self.target_duration // self.source_duration)
         sequence = sequence.unfold(
             sequence_dim,
             time_slices_size,
@@ -591,11 +633,11 @@ class VQNSynthTransformer(nn.Module):
         sequence = sequence.transpose(patch_time_dim, patch_frequency_dim)
         patch_time_dim, patch_frequency_dim = patch_frequency_dim, patch_time_dim
 
-        # retrieve source event slices
+        # retrieve source frequency slices
         sequence = sequence.unfold(
             sequence_dim,
-            self.source_num_channels,
-            self.source_num_channels
+            self.source_frequencies,
+            self.source_frequencies
         )
         # unfolding introduces a new dimension in innermost position
         source_channels_dim = sequence.dim() - 1
@@ -733,9 +775,9 @@ class VQNSynthTransformer(nn.Module):
                                kind: str,
                                class_conditioning: Mapping[str, torch.Tensor],
                                sequence_dim: int):
-        if self.disable_start_symbol_DEBUG or (
-                self.conditional_model and kind == 'source'):
-            return sequence_with_positions
+        # if self.disable_start_symbol_DEBUG or (
+        #         self.conditional_model and kind == 'source'):
+        #     return sequence_with_positions
         # removing the unnecessary else to remove one level of indentation
 
         batch_size = sequence_with_positions.shape[0]
@@ -768,14 +810,11 @@ class VQNSynthTransformer(nn.Module):
                     start_position = (
                         self.class_conditioning_start_positions_per_modality[
                             condition_name])
-                    start_symbol[:, 0, start_position:start_position+embeddings.shape[1]] = embeddings
+                    start_symbol[:, :, start_position:start_position+embeddings.shape[1]] = embeddings.unsqueeze(1)
 
         sequence_with_start_symbol = torch.cat(
                 [start_symbol,
-                 sequence_with_positions.narrow(
-                     sequence_dim,
-                     0,
-                     transformer_sequence_length-1)],
+                 sequence_with_positions],
                 dim=sequence_dim
         )
         return sequence_with_start_symbol
@@ -976,18 +1015,18 @@ class VQNSynthTransformer(nn.Module):
                             else self.causal_mask.t()  # anti-causal mask
                             )
                 memory = self.transformer.encoder(
-                time_major_source_sequence,
+                    time_major_source_sequence,
                     mask=src_mask)
                 if self.use_relative_transformer:
                     memory, *encoder_attentions = memory
 
             if time_major_class_condition_sequence is not None:
                 output_sequence = self.transformer.decoder(
-                time_major_target_sequence,
+                    time_major_target_sequence,
                     memory,
-                tgt_mask=self.causal_mask,
-                memory_mask=memory_mask,
-                condition=time_major_class_condition_sequence)
+                    tgt_mask=self.causal_mask,
+                    memory_mask=memory_mask,
+                    condition=time_major_class_condition_sequence)
             else:
                 output_sequence = self.transformer.decoder(
                     time_major_target_sequence,
@@ -1000,6 +1039,12 @@ class VQNSynthTransformer(nn.Module):
                                                mask=self.causal_mask)
         if self.use_relative_transformer:
             output_sequence, *decoder_attentions = output_sequence
+
+        # trim start symbol
+        target_start_symbol_duration = self.target_start_symbol.shape[1]
+        output_sequence = output_sequence[target_start_symbol_duration-1:]
+        # trim last token, unused in next-token prediction task
+        output_sequence = output_sequence[:-1]
 
         # transpose back to batch-major shape
         output_sequence = output_sequence.transpose(

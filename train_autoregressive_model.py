@@ -249,8 +249,8 @@ def run_model(args, epoch: int, loader: DataLoader, model: VQNSynthTransformer,
             loss.backward()
 
             if clip_grad_norm is not None:
-            nn.utils.clip_grad_norm_(parallel_model.parameters(),
-                                     clip_grad_norm)
+                nn.utils.clip_grad_norm_(parallel_model.parameters(),
+                                         clip_grad_norm)
 
             optimizer.step()
             if scheduler is not None:
@@ -402,6 +402,7 @@ if __name__ == '__main__':
                         type=int, default=16)
     parser.add_argument('--class_conditioning_prepend_to_dummy_input',
                         action='store_true')
+    parser.add_argument('--use_aligned_decoder', action='store_true')
     parser.add_argument('--self_conditional_model', action='store_true',
                         help=('whether to use an encoder/decoder architecture'
                               'with masked self-supervision'))
@@ -487,7 +488,8 @@ if __name__ == '__main__':
     loader = DataLoader(
         torch.utils.data.Subset(dataset, range(num_training_samples)),
         batch_size=args.batch_size, shuffle=True,
-        num_workers=args.num_workers, drop_last=False,
+        num_workers=args.num_workers,
+        drop_last=True,  # fixes multi-GPU gather bug on last batch
         pin_memory=True,
     )
     class_conditioning_num_classes_per_modality = {
@@ -507,7 +509,8 @@ if __name__ == '__main__':
             classes_for_conditioning=args.classes_for_conditioning)
         validation_loader = DataLoader(
             validation_dataset, batch_size=args.batch_size, shuffle=True,
-            num_workers=args.num_workers, drop_last=False
+            num_workers=args.num_workers,
+            drop_last=True  # fixes multi-GPU gather bug on last batch
         )
 
     model_checkpoint_weights = None
@@ -558,6 +561,8 @@ if __name__ == '__main__':
             unconditional_model_nhead=args.unconditional_model_nhead,
             unconditional_model_num_encoder_layers=(
                 args.unconditional_model_num_encoder_layers),
+            use_aligned_decoder=args.use_aligned_decoder,
+
             disable_start_symbol_DEBUG=args.disable_start_symbol_DEBUG,
         )
     elif args.hier == 'bottom':
@@ -569,7 +574,6 @@ if __name__ == '__main__':
             n_block=4,
             n_res_block=args.n_res_block,
             res_channel=args.n_res_channel,
-            attention=False,
             dropout=args.dropout,
             n_cond_res_block=args.n_cond_res_block,
             cond_res_channel=args.n_res_channel,
@@ -589,6 +593,7 @@ if __name__ == '__main__':
             use_identity_memory_mask=args.use_identity_memory_mask,
             local_class_conditioning=args.use_local_class_conditioning,
             positional_class_conditioning=args.positional_class_conditioning,
+            use_aligned_decoder=args.use_aligned_decoder,
 
             class_conditioning_num_classes_per_modality=(
                 class_conditioning_num_classes_per_modality),
