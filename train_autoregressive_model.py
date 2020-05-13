@@ -344,14 +344,14 @@ def run_model(args, epoch: int, loader: DataLoader, model: VQNSynthTransformer,
         loss_name = str(criterion)
         tensorboard_writer.add_scalar(
             (f'code_prediction-{run_type}_{args.hier}'
-             + (('-' + mask_sampler.__class__.__name__) if mask_sampler is not None else '')
-             + '/mean_{loss_name}'),
+             f"{('-' + mask_sampler.__class__.__name__) if mask_sampler is not None else ''}"
+             f'/mean_{loss_name}'),
             loss_sum / num_samples_seen_epoch,
             epoch)
         tensorboard_writer.add_scalar(
             (f'code_prediction-{run_type}_{args.hier}'
-             + (('-' + mask_sampler.__class__.__name__) if mask_sampler is not None else '')
-             + '/mean_accuracy'),
+             f"{('-' + mask_sampler.__class__.__name__) if mask_sampler is not None else ''}"
+             f'/mean_accuracy'),
             total_accuracy / num_samples_seen_epoch,
             epoch)
         if model.self_conditional_model:
