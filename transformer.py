@@ -1011,10 +1011,10 @@ class VQNSynthTransformer(nn.Module):
             if self.use_identity_memory_mask:
                 memory_mask = self.identity_memory_mask
             if memory is None:
+                src_mask = None
+                if self.self_conditional_model:
                 anti_causal_mask = self.causal_mask.t()
-                src_mask = (None if not self.self_conditional_model
-                            else anti_causal_mask
-                            )
+                    src_mask = anti_causal_mask
                 memory = self.transformer.encoder(
                     time_major_source_sequence,
                     mask=src_mask)
