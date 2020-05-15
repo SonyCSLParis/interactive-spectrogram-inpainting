@@ -265,8 +265,8 @@ def sample_model(model: PixelSNAIL, device: Union[torch.device, str],
             if model.self_conditional_model:
                 condition_sequence[:, i, :model.embeddings_effective_dim] = (
                     embedded_sample)
-                # condition sequence has changed, invalidates cached `memory`
-                memory = None
+                # the cached memory remains valid here,
+                # because the Top encoder uses anti-causal attention
 
     codemap = model.to_time_frequency_map(codemap_as_sequence,
                                           kind=kind).long()
