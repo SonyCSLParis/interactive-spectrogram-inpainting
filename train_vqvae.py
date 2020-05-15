@@ -185,6 +185,7 @@ def train(epoch: int, loader: DataLoader, model: nn.Module,
         tensorboard_writer.flush()
 
 
+@torch.no_grad()
 def evaluate(loader: DataLoader, model: nn.Module, device: str,
              latent_loss_weight: float = 0.25,
              dry_run: bool = False):
