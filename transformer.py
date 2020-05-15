@@ -424,8 +424,7 @@ class VQNSynthTransformer(nn.Module):
                     attention_bias_type_cross = 'no_bias'
 
                 decoder_layer_implementation: nn.Module
-                if (not self.self_conditional_model
-                        and self.use_aligned_decoder):
+                if self.use_aligned_decoder:
                     # hierarchical decoder, use an aligned implementation
                     # this computes cross-attention only with tokens from the source
                     # that directly condition underlying tokens in the target
@@ -1013,7 +1012,7 @@ class VQNSynthTransformer(nn.Module):
             if memory is None:
                 src_mask = None
                 if self.self_conditional_model:
-                anti_causal_mask = self.causal_mask.t()
+                    anti_causal_mask = self.causal_mask.t()
                     src_mask = anti_causal_mask
                 memory = self.transformer.encoder(
                     time_major_source_sequence,
