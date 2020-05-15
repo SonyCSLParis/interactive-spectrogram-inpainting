@@ -178,6 +178,7 @@ def sample_model(model: PixelSNAIL, device: Union[torch.device, str],
     else:
         class_conditioning_tensors = local_class_conditioning_map
     parallel_model = nn.DataParallel(model)
+    parallel_model.eval()
 
     constraint_height = 0
     constraint_width = 0
