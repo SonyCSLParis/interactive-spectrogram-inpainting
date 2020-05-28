@@ -159,7 +159,9 @@ def sample_model(model: PixelSNAIL, device: Union[torch.device, str],
             `constraint_2D.size` should be less or equal to codemap_size.
     """
     if initial_code is None:
-        codemap = (torch.zeros(batch_size, *codemap_size, dtype=torch.int64)
+        codemap = (torch.full([batch_size] + list(codemap_size),
+                              fill_value=model.mask_token_index if model.self_conditional_model else 0,
+                              dtype=torch.int64)
                    .to(device)
                    )
     else:
@@ -222,12 +224,19 @@ def sample_model(model: PixelSNAIL, device: Union[torch.device, str],
         input_sequence = source_sequence
         condition_sequence = None
 
+    sequence_duration_without_start_symbol = (
+        model.target_transformer_sequence_length)
+
+    source_start_symbol_duration = model.source_start_symbol.shape[1]
+    target_start_symbol_duration = model.target_start_symbol.shape[1]
+
     codemap_as_sequence = model.flatten_map(codemap, kind=kind)
 
     if mask is not None:
         mask = model.flatten_map(mask, kind=kind).squeeze(0)
     else:
-        mask = torch.full((sequence_duration, ), True)
+        mask = torch.full((sequence_duration_without_start_symbol, ),
+                          True, dtype=bool)
 
     class_condition_sequence = None
     if model.local_class_conditioning:
@@ -236,7 +245,7 @@ def sample_model(model: PixelSNAIL, device: Union[torch.device, str],
             )
 
     memory = None
-    for i in tqdm(range(sequence_duration)):
+    for i in tqdm(range(sequence_duration_without_start_symbol)):
         if not mask[i]:
             continue
 
@@ -258,15 +267,14 @@ def sample_model(model: PixelSNAIL, device: Union[torch.device, str],
         codemap_as_sequence[:, i] = sample.long()
 
         embedded_sample = model.embed_data(sample, kind)
-        if i+1 < sequence_duration:
             # translate to account for the added start_symbol!
-            input_sequence[:, i+1, :model.embeddings_effective_dim] = (
+        input_sequence[:, i+target_start_symbol_duration, :model.embeddings_effective_dim] = (
                 embedded_sample)
             if model.self_conditional_model:
-                condition_sequence[:, i, :model.embeddings_effective_dim] = (
+            # the cached memory remains valid here,
+            # because the Top encoder uses anti-causal attention
+            condition_sequence[:, i+source_start_symbol_duration, :model.embeddings_effective_dim] = (
                     embedded_sample)
-                # the cached memory remains valid here,
-                # because the Top encoder uses anti-causal attention
 
     codemap = model.to_time_frequency_map(codemap_as_sequence,
                                           kind=kind).long()
