@@ -267,15 +267,14 @@ def sample_model(model: PixelSNAIL, device: Union[torch.device, str],
         codemap_as_sequence[:, i] = sample.long()
 
         embedded_sample = model.embed_data(sample, kind)
-
             # translate to account for the added start_symbol!
         input_sequence[:, i+target_start_symbol_duration, :model.embeddings_effective_dim] = (
                 embedded_sample)
             if model.self_conditional_model:
+            # the cached memory remains valid here,
+            # because the Top encoder uses anti-causal attention
             condition_sequence[:, i+source_start_symbol_duration, :model.embeddings_effective_dim] = (
                     embedded_sample)
-                # the cached memory remains valid here,
-                # because the Top encoder uses anti-causal attention
 
     codemap = model.to_time_frequency_map(codemap_as_sequence,
                                           kind=kind).long()
