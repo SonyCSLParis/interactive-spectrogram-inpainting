@@ -21,6 +21,7 @@ import librosa.display
 from sklearn.preprocessing import LabelEncoder
 
 import torch
+from torch.utils.data import DataLoader
 
 import flask
 from flask import request
@@ -52,6 +53,7 @@ spectrograms_helper: Optional[SpectrogramsHelper] = None
 transformer_top: Optional[VQNSynthTransformer] = None
 transformer_bottom: Optional[VQNSynthTransformer] = None
 label_encoders_per_modality: Optional[Mapping[str, LabelEncoder]] = None
+codes_dataloader: Optional[DataLoader] = None
 FS_HZ: Optional[int] = None
 HOP_LENGTH: Optional[int] = None
 DEVICE: Optional[str] = None
@@ -144,7 +146,7 @@ def make_spectrogram_image(spectrogram: torch.Tensor,
               required=True)
 @click.option('--database_path_for_label_encoders', type=pathlib.Path,
               required=True)
-@click.option('--database_path_for_label_encoders', type=pathlib.Path,
+@click.option('--database_path_for_sampling', type=pathlib.Path,
               required=True)
 @click.option('--fs_hz', default=16000)
 @click.option('--sound_duration_s', default=4)
@@ -168,6 +170,7 @@ def init_app(vqvae_model_parameters_path: pathlib.Path,
              prediction_bottom_parameters_path: pathlib.Path,
              prediction_bottom_weights_path: pathlib.Path,
              database_path_for_label_encoders: pathlib.Path,
+             database_path_for_sampling: pathlib.Path,
              fs_hz: int,
              sound_duration_s: float,
              num_iterations: int,
@@ -237,6 +240,17 @@ def init_app(vqvae_model_parameters_path: pathlib.Path,
     )
     label_encoders_per_modality = dataset.label_encoders
 
+    global codes_dataloader
+    print("Load dataset for initial sounds sampling")
+    classes_for_conditioning = ['pitch', 'instrument_family_str']
+    SAMPLING_DATABASE_PATH = expand_path(database_path_for_label_encoders)
+    codes_dataset = LMDBDataset(
+        SAMPLING_DATABASE_PATH,
+        classes_for_conditioning=list(classes_for_conditioning)
+    )
+    codes_dataloader = DataLoader(codes_dataset, shuffle=True,
+                                  batch_size=1)
+
     os.makedirs('./uploads', exist_ok=True)
     # launch the script
     # use threaded=True to fix Chrome/Chromium engine hanging on requests
@@ -260,6 +274,13 @@ def masked_fill(array, mask, value):
     return [[value if mask_value else previous_value
              for previous_value, mask_value in zip(array_row, mask_row)]
             for array_row, mask_row in zip(array, mask)]
+
+
+def get_codemaps_from_database():
+    global codes_dataloader
+    assert codes_dataloader is not None
+    top_code, bottom_code, _ = next(iter(codes_dataloader))
+    return top_code, bottom_code
 
 
 @torch.no_grad()
@@ -314,6 +335,36 @@ def generate():
         temperature=temperature,
         class_conditioning=class_conditioning_tensors_bottom
     )
+
+    class_conditioning_top_map = {
+        modality: make_matrix(transformer_top.shape,
+                              value)
+        for modality, value in class_conditioning_top.items()
+    }
+    class_conditioning_bottom_map = {
+        modality: make_matrix(transformer_bottom.shape,
+                              value)
+        for modality, value in class_conditioning_bottom.items()
+    }
+
+    response = make_response(top_code, bottom_code,
+                             class_conditioning_top_map,
+                             class_conditioning_bottom_map)
+    return response
+
+
+@torch.no_grad()
+@app.route('/sample-from-dataset', methods=['GET', 'POST'])
+def sample_from_dataset():
+    pitch = int(request.args.get('pitch'))
+    instrument_family_str = str(request.args.get('instrument_family_str'))
+
+    class_conditioning_top = class_conditioning_bottom = {
+        'pitch': pitch,
+        'instrument_family_str': instrument_family_str
+    }
+
+    top_code, bottom_code = get_codemaps_from_database()
 
     class_conditioning_top_map = {
         modality: make_matrix(transformer_top.shape,
