@@ -13,6 +13,7 @@ import click
 import tempfile
 import os
 import json
+import functools
 import pathlib
 import matplotlib as mpl
 import matplotlib.pyplot as plt
@@ -60,6 +61,10 @@ DEVICE: Optional[str] = None
 SOUND_DURATION_S: Optional[float] = None
 SPECTROGRAMS_UPSAMPLING_FACTOR: Optional[int] = None
 USE_LOCAL_CONDITIONING: Optional[bool] = None
+TOP_K: Optional[int] = None
+TOP_P: Optional[float] = None
+
+partial_sample_model = None
 
 _num_iterations = None
 _sequence_length_ticks = None
@@ -157,6 +162,8 @@ def make_spectrogram_image(spectrogram: torch.Tensor,
 @click.option('--spectrograms_upsampling_factor', default=4)
 @click.option('--use_local_conditioning/--ignore_local_conditioning',
               default=True)
+@click.option('--sampling_top_k', default=0)
+@click.option('--sampling_top_p', default=0.)
 @click.option('--device', type=click.Choice(['cuda', 'cpu'],
                                             case_sensitive=False),
               default='cuda')
@@ -178,6 +185,8 @@ def init_app(vqvae_model_parameters_path: pathlib.Path,
              hop_length: int,
              spectrograms_upsampling_factor: int,
              use_local_conditioning: bool,
+             sampling_top_k: int,
+             sampling_top_p: float,
              device: str,
              port: int,
              ):
@@ -187,12 +196,17 @@ def init_app(vqvae_model_parameters_path: pathlib.Path,
     global DEVICE
     global SPECTROGRAMS_UPSAMPLING_FACTOR
     global USE_LOCAL_CONDITIONING
+    global TOP_K
+    global TOP_P
+    global partial_sample_model
     FS_HZ = fs_hz
     HOP_LENGTH = hop_length
     SOUND_DURATION_S = sound_duration_s
     DEVICE = device
     SPECTROGRAMS_UPSAMPLING_FACTOR = spectrograms_upsampling_factor
     USE_LOCAL_CONDITIONING = use_local_conditioning
+    TOP_K = sampling_top_k
+    TOP_P = sampling_top_p
 
     global vqvae
     print("Load VQ-VAE")
@@ -251,6 +265,13 @@ def init_app(vqvae_model_parameters_path: pathlib.Path,
     codes_dataloader = DataLoader(codes_dataset, shuffle=True,
                                   batch_size=1)
 
+    partial_sample_model = functools.partial(
+        sample_model,
+        device=DEVICE,
+        top_k_sampling_k=TOP_K,
+        top_p_sampling_p=TOP_P
+    )
+
     os.makedirs('./uploads', exist_ok=True)
     # launch the script
     # use threaded=True to fix Chrome/Chromium engine hanging on requests
@@ -301,6 +322,8 @@ def generate():
     assert label_encoders_per_modality is not None
     global DEVICE
     assert DEVICE is not None
+    global partial_sample_model
+    assert partial_sample_model is not None
 
     temperature = float(request.args.get('temperature'))
     pitch = int(request.args.get('pitch'))
@@ -318,22 +341,20 @@ def generate():
         label_encoders_per_modality)
 
     batch_size = 1
-    top_code = sample_model(
+    top_code = partial_sample_model(
         model=transformer_top,
-        device=DEVICE,
         batch_size=batch_size,
         codemap_size=transformer_top.shape,
         temperature=temperature,
         class_conditioning=class_conditioning_tensors_top
     )
-    bottom_code = sample_model(
+    bottom_code = partial_sample_model(
         model=transformer_bottom,
         condition=top_code,
-        device=DEVICE,
         batch_size=batch_size,
         codemap_size=transformer_bottom.shape,
         temperature=temperature,
-        class_conditioning=class_conditioning_tensors_bottom
+        class_conditioning=class_conditioning_tensors_bottom,
     )
 
     class_conditioning_top_map = {
@@ -485,6 +506,8 @@ def timerange_change():
     assert DEVICE is not None
     global USE_LOCAL_CONDITIONING
     assert USE_LOCAL_CONDITIONING is not None
+    global partial_sample_model
+    assert partial_sample_model is not None
 
     layer = str(request.args.get('layer'))
     temperature = float(request.args.get('temperature'))
@@ -515,10 +538,9 @@ def timerange_change():
     generation_mask_batched = parse_mask(request).to(DEVICE)
 
     if layer == 'bottom':
-        bottom_code_resampled = sample_model(
+        bottom_code_resampled = partial_sample_model(
             model=transformer_bottom,
             condition=top_code,
-            device=DEVICE,
             batch_size=1,
             codemap_size=transformer_bottom.shape,
             temperature=temperature,
@@ -548,7 +570,7 @@ def timerange_change():
             condition = top_code
         else:
             condition = None
-        top_code_resampled = sample_model(
+        top_code_resampled = partial_sample_model(
             model=transformer_top,
             condition=condition,
             device=DEVICE,
@@ -567,7 +589,7 @@ def timerange_change():
             generation_mask_batched.repeat_interleave(upsampling_f, 1)
             .repeat_interleave(upsampling_t, 2)
         )
-        bottom_code_resampled = sample_model(
+        bottom_code_resampled = partial_sample_model(
             model=transformer_bottom,
             condition=top_code_resampled,
             device=DEVICE,
