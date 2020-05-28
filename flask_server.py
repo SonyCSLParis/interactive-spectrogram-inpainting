@@ -19,6 +19,7 @@ import matplotlib.pyplot as plt
 import librosa
 import librosa.display
 from sklearn.preprocessing import LabelEncoder
+from zipfile import ZipFile
 
 import torch
 
@@ -716,6 +717,79 @@ def codes_to_spectrogram_image_response():
 
     return flask.send_file(spectrogram_image_path,
                            mimetype="image/png",
+                           cache_timeout=-1  # disable cache
+                           )
+
+
+@app.route('/top-conditioned-sample', methods=['POST'])
+def top_conditioned_sample():
+    """Sample from the bottom prior given the incoming top codemap"""
+    global vqvae
+    assert vqvae is not None
+    global DEVICE
+    assert DEVICE is not None
+    global transformer_bottom
+    assert transformer_bottom is not None
+    global label_encoders_per_modality
+    assert label_encoders_per_modality is not None
+    global spectrograms_helper
+    assert spectrograms_helper is not None
+
+    BYPASS = False
+
+    top_code, bottom_code = parse_codes(request)
+    global_instrument_family_str = str(
+        request.args.get('instrument_family_str'))
+    min_pitch = int(request.args.get('min_pitch'))
+    max_pitch = int(request.args.get('max_pitch'))
+
+    if not BYPASS:
+        temperature = float(request.args.get('temperature'))
+        top_p = float(request.args.get('top_p') or 0.0)
+        top_k = int(request.args.get('top_k') or 0)
+
+        class_conditioning_tensors_bottom = make_conditioning_tensors(
+            {'pitch': (min_pitch, max_pitch),
+             'instrument_family_str': global_instrument_family_str},
+            label_encoders_per_modality
+        )
+
+        # repeat the top codemap for all bottom samples
+        num_samples = max_pitch - min_pitch
+        top_code = top_code.expand(num_samples, -1, -1)
+
+        bottom_code = sample_model(
+            transformer_bottom, DEVICE, num_samples,
+            transformer_bottom.shape,
+            temperature, condition=top_code,
+            class_conditioning=class_conditioning_tensors_bottom,
+            top_p_sampling_p=top_p,
+            top_k_sampling_k=top_k
+        )
+    else:
+        import time
+        num_samples = 1
+        top_code = top_code.expand(num_samples, -1, -1)
+        bottom_code = bottom_code.expand(num_samples, -1, -1)
+        time.sleep(2)
+
+    logmelspectrogram_and_IF = vqvae.decode_code(top_code,
+                                                 bottom_code)
+    print(logmelspectrogram_and_IF.shape)
+
+    zip_path = upload_directory + 'samples.zip'
+    with ZipFile(zip_path, 'w') as zf:
+        for pitch, sample in zip(range(min_pitch, max_pitch),
+                                 logmelspectrogram_and_IF):
+            # convert to audio and write to file
+            audio = spectrograms_helper.to_audio(sample.unsqueeze(0))[0]
+            audio_path = write_audio_to_file(
+                audio,
+                f'-{global_instrument_family_str}-{pitch}')
+            zf.write(audio_path,
+                     arcname=f'{global_instrument_family_str}-{pitch}.wav')
+
+    return flask.send_file(zip_path, mimetype="application/zip",
                            cache_timeout=-1  # disable cache
                            )
 
