@@ -720,23 +720,19 @@ def codes_to_spectrogram_image_response():
                            )
 
 
-def write_audio_to_file(audio: torch.Tensor):
+def write_audio_to_file(audio: torch.Tensor, sample_id: str = ''):
     """Generate and send MP3 file
     """
     global FS_HZ
     assert FS_HZ is not None
     audio_extension = '.wav'
-    # audio_path = tempfile.mktemp() + audio_extension
-    audio_path = upload_directory + 'audio.wav'
+    audio_path = upload_directory + 'sample' + sample_id + audio_extension
     audio_np = audio.cpu().numpy()
     with open(audio_path, 'wb') as f:
         soundfile.write(f,
                         audio_np,
                         samplerate=FS_HZ)
     return audio_path
-    # return flask.send_file(audio_sample_path, mimetype="audio/wav",
-    #                        cache_timeout=-1  # disable cache
-    #                        )
 
 
 if __name__ == '__main__':
