@@ -137,7 +137,9 @@ def sample_model(model: PixelSNAIL, device: Union[torch.device, str],
                  mask: Optional[torch.Tensor] = None,
                  local_class_conditioning_map: Optional[Mapping[str, Iterable[int]]] = None,
                  top_k_sampling_k: int = 0,
-                 top_p_sampling_p: float = 0.0
+                 top_p_sampling_p: float = 0.0,
+                 # this option allows to drop-in tqdm_notebook when needed
+                 progressbar_decorator=tqdm
                  ):
     """Generate a sample from the provided PixelSNAIL
 
@@ -179,6 +181,7 @@ def sample_model(model: PixelSNAIL, device: Union[torch.device, str],
         }
     else:
         class_conditioning_tensors = local_class_conditioning_map
+
     parallel_model = nn.DataParallel(model)
     parallel_model.eval()
 
@@ -208,7 +211,6 @@ def sample_model(model: PixelSNAIL, device: Union[torch.device, str],
     if model.self_conditional_model:
         condition = codemap
 
-    sequence_duration = codemap_size[0] * codemap_size[1]
     source_sequence, target_sequence = model.to_sequences(
         codemap, condition,
         class_conditioning=class_conditioning_tensors,
@@ -224,7 +226,7 @@ def sample_model(model: PixelSNAIL, device: Union[torch.device, str],
         input_sequence = source_sequence
         condition_sequence = None
 
-    sequence_duration_without_start_symbol = (
+    sequence_duration_without_start_symbol: int = (
         model.target_transformer_sequence_length)
 
     source_start_symbol_duration = model.source_start_symbol.shape[1]
@@ -245,7 +247,8 @@ def sample_model(model: PixelSNAIL, device: Union[torch.device, str],
             )
 
     memory = None
-    for i in tqdm(range(sequence_duration_without_start_symbol)):
+    for i in progressbar_decorator(range(
+            sequence_duration_without_start_symbol)):
         if not mask[i]:
             continue
 
@@ -268,14 +271,14 @@ def sample_model(model: PixelSNAIL, device: Union[torch.device, str],
 
         embedded_sample = model.embed_data(sample, kind)
 
-            # translate to account for the added start_symbol!
+        # translate to account for the added start_symbol!
         input_sequence[:, i+target_start_symbol_duration, :model.embeddings_effective_dim] = (
-                embedded_sample)
-            if model.self_conditional_model:
+            embedded_sample)
+        if model.self_conditional_model:
             condition_sequence[:, i+source_start_symbol_duration, :model.embeddings_effective_dim] = (
-                    embedded_sample)
-                # the cached memory remains valid here,
-                # because the Top encoder uses anti-causal attention
+                embedded_sample)
+            # the cached memory remains valid here,
+            # because the Top encoder uses anti-causal attention
 
     codemap = model.to_time_frequency_map(codemap_as_sequence,
                                           kind=kind).long()
@@ -564,30 +567,22 @@ if __name__ == '__main__':
 
     codes_figure.savefig(OUTPUT_DIRECTORY / f'{run_ID}-codemaps.png')
 
-    if args.dataset == 'nsynth':
-        audio_sample_path = OUTPUT_DIRECTORY / f'{run_ID}.wav'
-        soundfile.write(audio_sample_path,
-                        make_audio(decoded_sample, condition_top_audio),
-                        samplerate=args.sample_rate_hz)
+    audio_sample_path = OUTPUT_DIRECTORY / f'{run_ID}.wav'
+    soundfile.write(audio_sample_path,
+                    make_audio(decoded_sample, condition_top_audio),
+                    samplerate=args.sample_rate_hz)
 
-        # write spectrogram and IF
-        channel_dim = 1
-        for channel_index, channel_name in enumerate(
-                ['spectrogram', 'instantaneous_frequency']):
-            channel = decoded_sample.select(channel_dim, channel_index
-                                            ).unsqueeze(channel_dim)
-            save_image(
-                channel,
-                os.path.join(args.output_directory, f'{run_ID}-{channel_name}.png'),
-                nrow=args.batch_size,
-                # normalize=True,
-                # range=(-1, 1),
-                # scale_each=True,
-            )
-    elif args.dataset == 'imagenet':
-        image_sample_path = os.path.join(args.output_directory, f'{run_ID}.png')
+    # write spectrogram and IF
+    channel_dim = 1
+    for channel_index, channel_name in enumerate(
+            ['spectrogram', 'instantaneous_frequency']):
+        channel = decoded_sample.select(channel_dim, channel_index
+                                        ).unsqueeze(channel_dim)
         save_image(
-                decoded_sample,
-                image_sample_path,
-                nrow=args.batch_size
-            )
+            channel,
+            os.path.join(args.output_directory, f'{run_ID}-{channel_name}.png'),
+            nrow=args.batch_size,
+            # normalize=True,
+            # range=(-1, 1),
+            # scale_each=True,
+        )
