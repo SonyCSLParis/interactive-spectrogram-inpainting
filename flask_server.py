@@ -13,14 +13,17 @@ import click
 import tempfile
 import os
 import json
+import functools
 import pathlib
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 import librosa
 import librosa.display
 from sklearn.preprocessing import LabelEncoder
+from zipfile import ZipFile
 
 import torch
+from torch.utils.data import DataLoader
 
 import flask
 from flask import request
@@ -52,12 +55,17 @@ spectrograms_helper: Optional[SpectrogramsHelper] = None
 transformer_top: Optional[VQNSynthTransformer] = None
 transformer_bottom: Optional[VQNSynthTransformer] = None
 label_encoders_per_modality: Optional[Mapping[str, LabelEncoder]] = None
+codes_dataloader: Optional[DataLoader] = None
 FS_HZ: Optional[int] = None
 HOP_LENGTH: Optional[int] = None
 DEVICE: Optional[str] = None
 SOUND_DURATION_S: Optional[float] = None
 SPECTROGRAMS_UPSAMPLING_FACTOR: Optional[int] = None
 USE_LOCAL_CONDITIONING: Optional[bool] = None
+TOP_K: Optional[int] = None
+TOP_P: Optional[float] = None
+
+partial_sample_model = None
 
 _num_iterations = None
 _sequence_length_ticks = None
@@ -144,7 +152,7 @@ def make_spectrogram_image(spectrogram: torch.Tensor,
               required=True)
 @click.option('--database_path_for_label_encoders', type=pathlib.Path,
               required=True)
-@click.option('--database_path_for_label_encoders', type=pathlib.Path,
+@click.option('--database_path_for_sampling', type=pathlib.Path,
               required=True)
 @click.option('--fs_hz', default=16000)
 @click.option('--sound_duration_s', default=4)
@@ -155,6 +163,8 @@ def make_spectrogram_image(spectrogram: torch.Tensor,
 @click.option('--spectrograms_upsampling_factor', default=4)
 @click.option('--use_local_conditioning/--ignore_local_conditioning',
               default=True)
+@click.option('--sampling_top_k', default=0)
+@click.option('--sampling_top_p', default=0.)
 @click.option('--device', type=click.Choice(['cuda', 'cpu'],
                                             case_sensitive=False),
               default='cuda')
@@ -168,6 +178,7 @@ def init_app(vqvae_model_parameters_path: pathlib.Path,
              prediction_bottom_parameters_path: pathlib.Path,
              prediction_bottom_weights_path: pathlib.Path,
              database_path_for_label_encoders: pathlib.Path,
+             database_path_for_sampling: pathlib.Path,
              fs_hz: int,
              sound_duration_s: float,
              num_iterations: int,
@@ -175,6 +186,8 @@ def init_app(vqvae_model_parameters_path: pathlib.Path,
              hop_length: int,
              spectrograms_upsampling_factor: int,
              use_local_conditioning: bool,
+             sampling_top_k: int,
+             sampling_top_p: float,
              device: str,
              port: int,
              ):
@@ -184,12 +197,17 @@ def init_app(vqvae_model_parameters_path: pathlib.Path,
     global DEVICE
     global SPECTROGRAMS_UPSAMPLING_FACTOR
     global USE_LOCAL_CONDITIONING
+    global TOP_K
+    global TOP_P
+    global partial_sample_model
     FS_HZ = fs_hz
     HOP_LENGTH = hop_length
     SOUND_DURATION_S = sound_duration_s
     DEVICE = device
     SPECTROGRAMS_UPSAMPLING_FACTOR = spectrograms_upsampling_factor
     USE_LOCAL_CONDITIONING = use_local_conditioning
+    TOP_K = sampling_top_k
+    TOP_P = sampling_top_p
 
     global vqvae
     print("Load VQ-VAE")
@@ -237,6 +255,24 @@ def init_app(vqvae_model_parameters_path: pathlib.Path,
     )
     label_encoders_per_modality = dataset.label_encoders
 
+    global codes_dataloader
+    print("Load dataset for initial sounds sampling")
+    classes_for_conditioning = ['pitch', 'instrument_family_str']
+    SAMPLING_DATABASE_PATH = expand_path(database_path_for_label_encoders)
+    codes_dataset = LMDBDataset(
+        SAMPLING_DATABASE_PATH,
+        classes_for_conditioning=list(classes_for_conditioning)
+    )
+    codes_dataloader = DataLoader(codes_dataset, shuffle=True,
+                                  batch_size=1)
+
+    partial_sample_model = functools.partial(
+        sample_model,
+        device=DEVICE,
+        top_k_sampling_k=TOP_K,
+        top_p_sampling_p=TOP_P
+    )
+
     os.makedirs('./uploads', exist_ok=True)
     # launch the script
     # use threaded=True to fix Chrome/Chromium engine hanging on requests
@@ -262,6 +298,13 @@ def masked_fill(array, mask, value):
             for array_row, mask_row in zip(array, mask)]
 
 
+def get_codemaps_from_database():
+    global codes_dataloader
+    assert codes_dataloader is not None
+    top_code, bottom_code, _ = next(iter(codes_dataloader))
+    return top_code, bottom_code
+
+
 @torch.no_grad()
 @app.route('/generate', methods=['GET', 'POST'])
 def generate():
@@ -280,6 +323,8 @@ def generate():
     assert label_encoders_per_modality is not None
     global DEVICE
     assert DEVICE is not None
+    global partial_sample_model
+    assert partial_sample_model is not None
 
     temperature = float(request.args.get('temperature'))
     pitch = int(request.args.get('pitch'))
@@ -297,23 +342,51 @@ def generate():
         label_encoders_per_modality)
 
     batch_size = 1
-    top_code = sample_model(
+    top_code = partial_sample_model(
         model=transformer_top,
-        device=DEVICE,
         batch_size=batch_size,
         codemap_size=transformer_top.shape,
         temperature=temperature,
         class_conditioning=class_conditioning_tensors_top
     )
-    bottom_code = sample_model(
+    bottom_code = partial_sample_model(
         model=transformer_bottom,
         condition=top_code,
-        device=DEVICE,
         batch_size=batch_size,
         codemap_size=transformer_bottom.shape,
         temperature=temperature,
-        class_conditioning=class_conditioning_tensors_bottom
+        class_conditioning=class_conditioning_tensors_bottom,
     )
+
+    class_conditioning_top_map = {
+        modality: make_matrix(transformer_top.shape,
+                              value)
+        for modality, value in class_conditioning_top.items()
+    }
+    class_conditioning_bottom_map = {
+        modality: make_matrix(transformer_bottom.shape,
+                              value)
+        for modality, value in class_conditioning_bottom.items()
+    }
+
+    response = make_response(top_code, bottom_code,
+                             class_conditioning_top_map,
+                             class_conditioning_bottom_map)
+    return response
+
+
+@torch.no_grad()
+@app.route('/sample-from-dataset', methods=['GET', 'POST'])
+def sample_from_dataset():
+    pitch = int(request.args.get('pitch'))
+    instrument_family_str = str(request.args.get('instrument_family_str'))
+
+    class_conditioning_top = class_conditioning_bottom = {
+        'pitch': pitch,
+        'instrument_family_str': instrument_family_str
+    }
+
+    top_code, bottom_code = get_codemaps_from_database()
 
     class_conditioning_top_map = {
         modality: make_matrix(transformer_top.shape,
@@ -434,6 +507,8 @@ def timerange_change():
     assert DEVICE is not None
     global USE_LOCAL_CONDITIONING
     assert USE_LOCAL_CONDITIONING is not None
+    global partial_sample_model
+    assert partial_sample_model is not None
 
     layer = str(request.args.get('layer'))
     temperature = float(request.args.get('temperature'))
@@ -464,10 +539,9 @@ def timerange_change():
     generation_mask_batched = parse_mask(request).to(DEVICE)
 
     if layer == 'bottom':
-        bottom_code_resampled = sample_model(
+        bottom_code_resampled = partial_sample_model(
             model=transformer_bottom,
             condition=top_code,
-            device=DEVICE,
             batch_size=1,
             codemap_size=transformer_bottom.shape,
             temperature=temperature,
@@ -497,7 +571,7 @@ def timerange_change():
             condition = top_code
         else:
             condition = None
-        top_code_resampled = sample_model(
+        top_code_resampled = partial_sample_model(
             model=transformer_top,
             condition=condition,
             device=DEVICE,
@@ -516,7 +590,7 @@ def timerange_change():
             generation_mask_batched.repeat_interleave(upsampling_f, 1)
             .repeat_interleave(upsampling_t, 2)
         )
-        bottom_code_resampled = sample_model(
+        bottom_code_resampled = partial_sample_model(
             model=transformer_bottom,
             condition=top_code_resampled,
             device=DEVICE,
@@ -720,23 +794,92 @@ def codes_to_spectrogram_image_response():
                            )
 
 
-def write_audio_to_file(audio: torch.Tensor):
+@app.route('/top-conditioned-sample', methods=['POST'])
+def top_conditioned_sample():
+    """Sample from the bottom prior given the incoming top codemap"""
+    global vqvae
+    assert vqvae is not None
+    global DEVICE
+    assert DEVICE is not None
+    global transformer_bottom
+    assert transformer_bottom is not None
+    global label_encoders_per_modality
+    assert label_encoders_per_modality is not None
+    global spectrograms_helper
+    assert spectrograms_helper is not None
+
+    BYPASS = False
+
+    top_code, bottom_code = parse_codes(request)
+    global_instrument_family_str = str(
+        request.args.get('instrument_family_str'))
+    min_pitch = int(request.args.get('min_pitch'))
+    max_pitch = int(request.args.get('max_pitch'))
+
+    if not BYPASS:
+        temperature = float(request.args.get('temperature'))
+        top_p = float(request.args.get('top_p') or 0.0)
+        top_k = int(request.args.get('top_k') or 0)
+
+        class_conditioning_tensors_bottom = make_conditioning_tensors(
+            {'pitch': (min_pitch, max_pitch),
+             'instrument_family_str': global_instrument_family_str},
+            label_encoders_per_modality
+        )
+
+        # repeat the top codemap for all bottom samples
+        num_samples = max_pitch - min_pitch
+        top_code = top_code.expand(num_samples, -1, -1)
+
+        bottom_code = sample_model(
+            transformer_bottom, DEVICE, num_samples,
+            transformer_bottom.shape,
+            temperature, condition=top_code,
+            class_conditioning=class_conditioning_tensors_bottom,
+            top_p_sampling_p=top_p,
+            top_k_sampling_k=top_k
+        )
+    else:
+        import time
+        num_samples = 1
+        top_code = top_code.expand(num_samples, -1, -1)
+        bottom_code = bottom_code.expand(num_samples, -1, -1)
+        time.sleep(2)
+
+    logmelspectrogram_and_IF = vqvae.decode_code(top_code,
+                                                 bottom_code)
+    print(logmelspectrogram_and_IF.shape)
+
+    zip_path = upload_directory + 'samples.zip'
+    with ZipFile(zip_path, 'w') as zf:
+        for pitch, sample in zip(range(min_pitch, max_pitch),
+                                 logmelspectrogram_and_IF):
+            # convert to audio and write to file
+            audio = spectrograms_helper.to_audio(sample.unsqueeze(0))[0]
+            audio_path = write_audio_to_file(
+                audio,
+                f'-{global_instrument_family_str}-{pitch}')
+            zf.write(audio_path,
+                     arcname=f'{global_instrument_family_str}-{pitch}.wav')
+
+    return flask.send_file(zip_path, mimetype="application/zip",
+                           cache_timeout=-1  # disable cache
+                           )
+
+
+def write_audio_to_file(audio: torch.Tensor, sample_id: str = ''):
     """Generate and send MP3 file
     """
     global FS_HZ
     assert FS_HZ is not None
     audio_extension = '.wav'
-    # audio_path = tempfile.mktemp() + audio_extension
-    audio_path = upload_directory + 'audio.wav'
+    audio_path = upload_directory + 'sample' + sample_id + audio_extension
     audio_np = audio.cpu().numpy()
     with open(audio_path, 'wb') as f:
         soundfile.write(f,
                         audio_np,
                         samplerate=FS_HZ)
     return audio_path
-    # return flask.send_file(audio_sample_path, mimetype="audio/wav",
-    #                        cache_timeout=-1  # disable cache
-    #                        )
 
 
 if __name__ == '__main__':
