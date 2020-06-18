@@ -676,18 +676,13 @@ def parse_codes(request) -> Tuple[torch.LongTensor,
 
     json_data = request.get_json(force=True)
 
-    top_code_flattened_array = json_data['top_code']
-    bottom_code_flattened_array = json_data['bottom_code']
+    top_code_array = json_data['top_code']
+    bottom_code_array = json_data['bottom_code']
 
-    top_code_flattened = torch.LongTensor(top_code_flattened_array
-                                          ).unsqueeze(0)
-    bottom_code_flattened = torch.LongTensor(bottom_code_flattened_array
-                                             ).unsqueeze(0)
-
-    top_code = transformer_top.to_time_frequency_map(
-        top_code_flattened, kind='source').to(DEVICE)
-    bottom_code = transformer_bottom.to_time_frequency_map(
-        bottom_code_flattened, kind='target').to(DEVICE)
+    top_code = torch.LongTensor(top_code_array
+                                ).unsqueeze(0).to(DEVICE)
+    bottom_code = torch.LongTensor(bottom_code_array
+                                   ).unsqueeze(0).to(DEVICE)
 
     return top_code, bottom_code
 
@@ -734,19 +729,8 @@ def make_response(top_code: torch.Tensor,
                   class_conditioning_top_map: Mapping[str, ConditioningMap],
                   class_conditioning_bottom_map: Mapping[str, ConditioningMap],
                   send_files: bool = False):
-    global transformer_top
-    assert transformer_top is not None
-    global transformer_bottom
-    assert transformer_bottom is not None
-
-    # flatten codes for sending as lists
-    top_code_flattened = transformer_top.flatten_map(
-        top_code, kind='source')[0].int().cpu().numpy().tolist()
-    bottom_code_flattened = transformer_bottom.flatten_map(
-        bottom_code, kind='target')[0].int().cpu().numpy().tolist()
-
-    return flask.jsonify({'top_code': top_code_flattened,
-                          'bottom_code': bottom_code_flattened,
+    return flask.jsonify({'top_code': top_code[0].int().cpu().numpy().tolist(),
+                          'bottom_code': bottom_code[0].int().cpu().numpy().tolist(),
                           'top_conditioning': class_conditioning_top_map,
                           'bottom_conditioning': class_conditioning_bottom_map,
                           })
