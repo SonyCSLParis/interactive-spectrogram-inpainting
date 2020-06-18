@@ -283,7 +283,7 @@ def init_app(vqvae_model_parameters_path: pathlib.Path,
         app.run(threaded=True)
     else:
         # accessible from outside:
-        app.run(host='0.0.0.0', port=port, threaded=False)
+        app.run(host='0.0.0.0', port=port, threaded=True)
 
 
 def make_matrix(shape: Tuple[int, int],
