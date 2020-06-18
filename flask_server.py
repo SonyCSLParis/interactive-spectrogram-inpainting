@@ -405,8 +405,8 @@ def sample_from_dataset():
     return response
 
 
-@torch.no_grad()
 @app.route('/test-generate', methods=['GET', 'POST'])
+@torch.no_grad()
 def test_generate():
     global transformer_top
     assert transformer_top is not None
@@ -444,6 +444,7 @@ def test_generate():
 
 
 @app.route('/analyze-audio', methods=['POST'])
+@torch.no_grad()
 def audio_to_codes():
     global vqvae
     assert vqvae is not None
@@ -489,6 +490,7 @@ def audio_to_codes():
 
 
 @app.route('/timerange-change', methods=['POST'])
+@torch.no_grad()
 def timerange_change():
     """
     Perform local re-generation on a sheet and return the updated sheet
@@ -622,6 +624,7 @@ def timerange_change():
 
 
 @app.route('/erase', methods=['POST'])
+@torch.no_grad()
 def erase():
     global transformer_top
     assert transformer_top is not None
@@ -667,6 +670,7 @@ def erase():
                          input_conditioning_bottom)
 
 
+@torch.no_grad()
 def parse_codes(request) -> Tuple[torch.LongTensor,
                                   torch.LongTensor]:
     global transformer_top
@@ -737,6 +741,7 @@ def make_response(top_code: torch.Tensor,
 
 
 @app.route('/get-audio', methods=['POST'])
+@torch.no_grad()
 def codes_to_audio_response():
     global vqvae
     assert vqvae is not None
@@ -757,6 +762,7 @@ def codes_to_audio_response():
 
 
 @app.route('/get-spectrogram-image', methods=['POST'])
+@torch.no_grad()
 def codes_to_spectrogram_image_response():
     global SPECTROGRAMS_UPSAMPLING_FACTOR
     assert SPECTROGRAMS_UPSAMPLING_FACTOR is not None
@@ -779,6 +785,7 @@ def codes_to_spectrogram_image_response():
 
 
 @app.route('/top-conditioned-sample', methods=['POST'])
+@torch.no_grad()
 def top_conditioned_sample():
     """Sample from the bottom prior given the incoming top codemap"""
     global vqvae
