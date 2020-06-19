@@ -136,10 +136,12 @@ def sample_model(model: PixelSNAIL, device: Union[torch.device, str],
                  initial_code: Optional[torch.Tensor] = None,
                  mask: Optional[torch.Tensor] = None,
                  local_class_conditioning_map: Optional[Mapping[str, Iterable[int]]] = None,
+                 time_indexes_source: Optional[Iterable[int]] = None,
+                 time_indexes_target: Optional[Iterable[int]] = None,
                  top_k_sampling_k: int = 0,
                  top_p_sampling_p: float = 0.0,
                  # this option allows to drop-in tqdm_notebook when needed
-                 progressbar_decorator=tqdm
+                 progressbar_decorator=tqdm,
                  ):
     """Generate a sample from the provided PixelSNAIL
 
@@ -214,7 +216,9 @@ def sample_model(model: PixelSNAIL, device: Union[torch.device, str],
     source_sequence, target_sequence = model.to_sequences(
         codemap, condition,
         class_conditioning=class_conditioning_tensors,
-        mask=mask
+        mask=mask,
+        time_indexes_source=time_indexes_source,
+        time_indexes_target=time_indexes_target
     )
 
     if model.conditional_model:

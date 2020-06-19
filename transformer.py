@@ -677,7 +677,8 @@ class VQNSynthTransformer(nn.Module):
 
     def prepare_data(self, input: torch.Tensor, kind: Optional[str] = None,
                      class_conditioning: Mapping[str, torch.Tensor] = {},
-                     mask: Optional[torch.Tensor] = None
+                     mask: Optional[torch.Tensor] = None,
+                     time_indexes: Optional[Iterable[int]] = None
                      ) -> torch.Tensor:
         if not self.conditional_model:
             assert kind == 'source' or kind is None
@@ -698,7 +699,8 @@ class VQNSynthTransformer(nn.Module):
         embedded_sequence = self.embed_data(input_as_sequence, kind=kind)
 
         embedded_sequence_with_positions = self.add_positions_to_sequence(
-            embedded_sequence, kind=kind, embedding_dim=embedding_dim
+            embedded_sequence, kind=kind, embedding_dim=embedding_dim,
+            time_indexes=time_indexes
         )
 
         if self.positional_class_conditioning:
@@ -717,7 +719,8 @@ class VQNSynthTransformer(nn.Module):
             (batch_dim, frequency_dim, time_dim))
 
     def add_positions_to_sequence(self, sequence: torch.Tensor, kind: str,
-                                  embedding_dim: int):
+                                  embedding_dim: int,
+                                  time_indexes: Optional[Iterable[int]]):
         # add positional embeddings
         batch_size = sequence.shape[0]
         # combine time and frequency embeddings
@@ -741,6 +744,12 @@ class VQNSynthTransformer(nn.Module):
             positional_embeddings
             .reshape(1, frequencies, duration, -1)
             .repeat(batch_size, 1, 1, 1))
+        if time_indexes is not None:
+            # use non default time indexes, can be used e.g. when performing
+            # predictions on sequences with a longer duration than the model's,
+            # allowing to bias its operation to avoid introducing attacks or
+            # releases in the middle of a longer sound
+            positional_embeddings = positional_embeddings[..., time_indexes, :]
         positions_as_sequence = self.flatten_map(positional_embeddings,
                                                  kind=kind)
 
@@ -853,7 +862,9 @@ class VQNSynthTransformer(nn.Module):
             self, input: torch.Tensor,
             condition: Optional[torch.Tensor] = None,
             class_conditioning: Mapping[str, torch.Tensor] = {},
-            mask: Optional[torch.BoolTensor] = None
+            mask: Optional[torch.BoolTensor] = None,
+            time_indexes_source: Optional[Iterable[int]] = None,
+            time_indexes_target: Optional[Iterable[int]] = None,
             ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
         batch_dim, frequency_dim, time_dim, embedding_dim = (0, 1, 2, 3)
         batch_size = input.shape[0]
@@ -869,12 +880,14 @@ class VQNSynthTransformer(nn.Module):
             batch_dim, frequency_dim, time_dim) = self.prepare_data(
                 input=source, kind='source',
                 class_conditioning=class_conditioning,
-                mask=mask)
+                mask=mask,
+                time_indexes=time_indexes_source)
 
         if self.conditional_model:
             target_sequence, _ = self.prepare_data(
                 input=target, kind='target',
-                class_conditioning=class_conditioning)
+                class_conditioning=class_conditioning,
+                time_indexes=time_indexes_target)
         else:
             target_sequence = None
 
