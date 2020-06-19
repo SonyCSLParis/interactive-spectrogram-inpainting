@@ -21,6 +21,7 @@ import librosa
 import librosa.display
 from sklearn.preprocessing import LabelEncoder
 from zipfile import ZipFile
+from distutils.util import strtobool
 
 import torch
 from torch.utils.data import DataLoader
@@ -298,11 +299,30 @@ def masked_fill(array, mask, value):
             for array_row, mask_row in zip(array, mask)]
 
 
-def get_codemaps_from_database():
+def resize_codemaps_repeat_last(
+        top_code: torch.Tensor, bottom_code: torch.Tensor,
+        duration_top: int) -> Tuple[torch.Tensor, torch.Tensor]:
+    upsampling_ratio_time = bottom_code.shape[-1] // top_code.shape[-1]
+    duration_bottom = upsampling_ratio_time * duration_top
+
+    def resize_codemap(codemap: torch.Tensor, duration: int) -> torch.Tensor:
+        codemap = codemap[..., :duration]
+        if codemap.shape[-1] < duration:
+            codemap = torch.cat([codemap] + [codemap[..., -1:]] * (
+                duration - codemap.shape[-1]),
+                                dim=-1)
+        return codemap
+
+    return tuple(resize_codemap(codemap, duration)
+                 for (codemap, duration) in zip((top_code, bottom_code),
+                                                (duration_top, duration_bottom)))
+
+
+def get_codemaps_from_database(duration_top: int):
     global codes_dataloader
     assert codes_dataloader is not None
     top_code, bottom_code, _ = next(iter(codes_dataloader))
-    return top_code, bottom_code
+    return resize_codemaps_repeat_last(top_code, bottom_code, duration_top)
 
 
 @torch.no_grad()
@@ -380,21 +400,22 @@ def generate():
 def sample_from_dataset():
     pitch = int(request.args.get('pitch'))
     instrument_family_str = str(request.args.get('instrument_family_str'))
+    duration_top = int(request.args.get('duration_top'))
 
     class_conditioning_top = class_conditioning_bottom = {
         'pitch': pitch,
         'instrument_family_str': instrument_family_str
     }
 
-    top_code, bottom_code = get_codemaps_from_database()
+    top_code, bottom_code = get_codemaps_from_database(duration_top)
 
     class_conditioning_top_map = {
-        modality: make_matrix(transformer_top.shape,
+        modality: make_matrix(top_code.shape,
                               value)
         for modality, value in class_conditioning_top.items()
     }
     class_conditioning_bottom_map = {
-        modality: make_matrix(transformer_bottom.shape,
+        modality: make_matrix(bottom_code.shape,
                               value)
         for modality, value in class_conditioning_bottom.items()
     }
@@ -514,6 +535,8 @@ def timerange_change():
 
     layer = str(request.args.get('layer'))
     temperature = float(request.args.get('temperature'))
+    start_index_top = int(request.args.get('start_index_top'))
+    uniform_sampling = bool(strtobool(request.args.get('uniform_sampling')))
 
     # try to retrieve local conditioning map in the request's JSON payload
     (class_conditioning_top_map, class_conditioning_bottom_map,
@@ -538,20 +561,42 @@ def timerange_change():
         class_conditioning_bottom = class_conditioning_tensors_bottom = None
 
     top_code, bottom_code = parse_codes(request)
+
+    # extract frame to operate on
+    end_index_top = start_index_top + transformer_top.shape[1]
+    top_code_frame = top_code[..., start_index_top:end_index_top]
+
+    upsampling_ratio_time = (transformer_bottom.shape[1]
+                             // transformer_top.shape[1])
+    start_index_bottom = upsampling_ratio_time * start_index_top
+    end_index_bottom = start_index_bottom + transformer_bottom.shape[1]
+    bottom_code_frame = bottom_code[..., start_index_bottom:end_index_bottom]
     generation_mask_batched = parse_mask(request).to(DEVICE)
 
     if layer == 'bottom':
-        bottom_code_resampled = partial_sample_model(
-            model=transformer_bottom,
-            condition=top_code,
-            batch_size=1,
-            codemap_size=transformer_bottom.shape,
-            temperature=temperature,
-            class_conditioning=class_conditioning_tensors_bottom,
-            local_class_conditioning_map=class_conditioning_bottom_map,
-            initial_code=bottom_code,
-            mask=generation_mask_batched
-        )
+        if not uniform_sampling:
+            bottom_code_resampled_frame = partial_sample_model(
+                model=transformer_bottom,
+                condition=top_code_frame,
+                batch_size=1,
+                codemap_size=transformer_bottom.shape,
+                temperature=temperature,
+                class_conditioning=class_conditioning_tensors_bottom,
+                local_class_conditioning_map=class_conditioning_bottom_map,
+                initial_code=bottom_code_frame,
+                mask=generation_mask_batched
+            )
+        else:
+            bottom_code_resampled_frame = bottom_code_frame.masked_scatter(
+                generation_mask_batched,
+                torch.randint_like(bottom_code_frame,
+                                   high=transformer_bottom.n_class_out)
+            )
+            print(bottom_code_frame - bottom_code_resampled_frame)
+
+        bottom_code_resampled = bottom_code
+        bottom_code_resampled[..., start_index_bottom:end_index_bottom] = (
+            bottom_code_resampled_frame)
 
         # create JSON response
         response = make_response(top_code, bottom_code_resampled,
@@ -569,39 +614,51 @@ def timerange_change():
         else:
             class_conditioning_top = class_conditioning_tensors_top = None
 
-        if transformer_top.self_conditional_model:
-            condition = top_code
+        if not uniform_sampling:
+            if transformer_top.self_conditional_model:
+                condition = top_code_frame
+            else:
+                condition = None
+            top_code_resampled_frame = partial_sample_model(
+                model=transformer_top,
+                condition=condition,
+                device=DEVICE,
+                batch_size=1,
+                codemap_size=transformer_top.shape,
+                temperature=temperature,
+                class_conditioning=class_conditioning_tensors_top,
+                local_class_conditioning_map=class_conditioning_top_map,
+                initial_code=top_code_frame,
+                mask=generation_mask_batched
+            )
         else:
-            condition = None
-        top_code_resampled = partial_sample_model(
-            model=transformer_top,
-            condition=condition,
-            device=DEVICE,
-            batch_size=1,
-            codemap_size=transformer_top.shape,
-            temperature=temperature,
-            class_conditioning=class_conditioning_tensors_top,
-            local_class_conditioning_map=class_conditioning_top_map,
-            initial_code=top_code,
-            mask=generation_mask_batched
-        )
+            top_code_resampled_frame = top_code_frame.masked_scatter(
+                generation_mask_batched,
+                torch.randint_like(top_code_frame,
+                                   high=transformer_top.n_class_out)
+            )
 
-        upsampling_f = transformer_bottom.shape[0] // transformer_top.shape[0]
-        upsampling_t = transformer_bottom.shape[1] // transformer_top.shape[1]
+        top_code_resampled = top_code
+        top_code_resampled[..., start_index_top:end_index_top] = (
+            top_code_resampled_frame)
+
+        upsampling_ratio_frequency = (transformer_bottom.shape[0]
+                                      // transformer_top.shape[0])
         generation_mask_bottom_batched = (
-            generation_mask_batched.repeat_interleave(upsampling_f, 1)
-            .repeat_interleave(upsampling_t, 2)
+            generation_mask_batched
+            .repeat_interleave(upsampling_ratio_frequency, -2)
+            .repeat_interleave(upsampling_ratio_time, -1)
         )
-        bottom_code_resampled = partial_sample_model(
+        bottom_code_resampled_frame = partial_sample_model(
             model=transformer_bottom,
-            condition=top_code_resampled,
+            condition=top_code_resampled_frame,
             device=DEVICE,
             batch_size=1,
             codemap_size=transformer_bottom.shape,
             temperature=temperature,
             class_conditioning=class_conditioning_tensors_bottom,
             local_class_conditioning_map=class_conditioning_bottom_map,
-            initial_code=bottom_code,
+            initial_code=bottom_code_frame,
             mask=generation_mask_bottom_batched
         )
 
@@ -614,6 +671,10 @@ def timerange_change():
             for modality, modality_conditioning
             in input_conditioning_bottom.items()
         }
+
+        bottom_code_resampled = bottom_code
+        bottom_code_resampled[..., start_index_bottom:end_index_bottom] = (
+            bottom_code_resampled_frame)
 
         # create JSON response
         response = make_response(top_code_resampled, bottom_code_resampled,
