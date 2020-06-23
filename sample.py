@@ -536,8 +536,8 @@ if __name__ == '__main__':
     if args.condition_top_audio_path is not None:
         CONDITION_TOP_AUDIO_PATH = expand_path(args.condition_top_audio_path)
         import torchvision.transforms as transforms
-        sample_audio, fs_hz = torchaudio.load_wav(CONDITION_TOP_AUDIO_PATH,
-                                                  channels_first=True)
+        sample_audio, fs_hz = torchaudio.load(CONDITION_TOP_AUDIO_PATH,
+                                              channels_first=True)
         resampler = torchaudio.transforms.Resample(
             orig_freq=fs_hz, new_freq=args.sample_rate_hz)
         sample_audio = resampler(sample_audio.cuda())
