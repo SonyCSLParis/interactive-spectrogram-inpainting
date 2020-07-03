@@ -383,6 +383,7 @@ class VQVAE(nn.Module):
             Union[DataNormalizerStatistics, Mapping[str, float]]] = None,
         corruption_weights: Mapping[str, Optional[List[float]]] = {'top': None,
                                                                    'bottom': None},
+        adapt_quantized_durations: bool = True
     ):
         if decoder_output_activation is not None:
             raise NotImplementedError("TODO")
@@ -508,6 +509,8 @@ class VQVAE(nn.Module):
             self.output_transform = make_masked_phase_transform(
                 self.output_spectrogram_min_magnitude)
 
+        self.adapt_quantized_durations = adapt_quantized_durations
+
     def forward(self, input):
         quant_t, quant_b, diff, id_t, id_b, perplexity_t, perplexity_b = self.encode(
             input)
@@ -530,6 +533,10 @@ class VQVAE(nn.Module):
         diff_t = diff_t.unsqueeze(0)
 
         dec_t = self.dec_t(quant_t)
+        if self.adapt_quantized_durations:
+            quantized_duration = min(dec_t.shape[-1], enc_b.shape[-1])
+            dec_t = dec_t[..., :quantized_duration]
+            enc_b = enc_b[..., :quantized_duration]
         enc_b = torch.cat([dec_t, enc_b], 1)
 
         quant_b = self.quantize_conv_b(enc_b).permute(0, 2, 3, 1)
