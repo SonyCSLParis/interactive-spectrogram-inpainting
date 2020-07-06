@@ -8,7 +8,7 @@ import utils as vqvae_utils
 from utils import expand_path
 
 import soundfile
-from typing import Union, Tuple, Mapping, Optional
+from typing import Union, Tuple, Mapping, Optional, List
 import click
 import tempfile
 import os
@@ -24,6 +24,7 @@ from zipfile import ZipFile
 from distutils.util import strtobool
 
 import torch
+import torchaudio
 from torch.utils.data import DataLoader
 
 import flask
@@ -60,7 +61,7 @@ codes_dataloader: Optional[DataLoader] = None
 FS_HZ: Optional[int] = None
 HOP_LENGTH: Optional[int] = None
 DEVICE: Optional[str] = None
-SOUND_DURATION_S: Optional[float] = None
+MAX_SOUND_DURATION_S: Optional[float] = None
 SPECTROGRAMS_UPSAMPLING_FACTOR: Optional[int] = None
 USE_LOCAL_CONDITIONING: Optional[bool] = None
 TOP_K: Optional[int] = None
@@ -156,7 +157,8 @@ def make_spectrogram_image(spectrogram: torch.Tensor,
 @click.option('--database_path_for_sampling', type=pathlib.Path,
               required=True)
 @click.option('--fs_hz', default=16000)
-@click.option('--sound_duration_s', default=4)
+@click.option('--max_sound_duration_s', default=60,
+              help='Maximum allowed duration for imported samples (in seconds)')
 @click.option('--num_iterations', default=50,
               help='number of parallel pseudo-Gibbs sampling iterations (for a single update)')
 @click.option('--n_fft', default=2048)
@@ -181,7 +183,7 @@ def init_app(vqvae_model_parameters_path: pathlib.Path,
              database_path_for_label_encoders: pathlib.Path,
              database_path_for_sampling: pathlib.Path,
              fs_hz: int,
-             sound_duration_s: float,
+             max_sound_duration_s: float,
              num_iterations: int,
              n_fft: int,
              hop_length: int,
@@ -194,7 +196,7 @@ def init_app(vqvae_model_parameters_path: pathlib.Path,
              ):
     global FS_HZ
     global HOP_LENGTH
-    global SOUND_DURATION_S
+    global MAX_SOUND_DURATION_S
     global DEVICE
     global SPECTROGRAMS_UPSAMPLING_FACTOR
     global USE_LOCAL_CONDITIONING
@@ -203,7 +205,7 @@ def init_app(vqvae_model_parameters_path: pathlib.Path,
     global partial_sample_model
     FS_HZ = fs_hz
     HOP_LENGTH = hop_length
-    SOUND_DURATION_S = sound_duration_s
+    MAX_SOUND_DURATION_S = max_sound_duration_s
     DEVICE = device
     SPECTROGRAMS_UPSAMPLING_FACTOR = spectrograms_upsampling_factor
     USE_LOCAL_CONDITIONING = use_local_conditioning
@@ -464,18 +466,78 @@ def test_generate():
     return response
 
 
+def get_duration_sox_s(audio_file_path: str) -> float:
+    """Retrieve duration of a signal without loading it"""
+    sox_signalinfo_t = torchaudio.info(audio_file_path)[0]
+    num_channels = sox_signalinfo_t.channels
+    file_fs_hz = sox_signalinfo_t.rate
+    duration_n = sox_signalinfo_t.length // num_channels
+    return duration_n / file_fs_hz
+
+
+def get_duration_sox_n(audio_file_path: str) -> float:
+    """Retrieve duration of a signal without loading it"""
+    global FS_HZ
+    assert FS_HZ is not None
+    sox_signalinfo_t = torchaudio.info(audio_file_path)[0]
+    num_channels = sox_signalinfo_t.channels
+    file_fs_hz = sox_signalinfo_t.rate
+    duration_n = sox_signalinfo_t.length // num_channels
+    # TODO(theis): probably not exact value
+    duration_n_resampled = int(duration_n * (FS_HZ / file_fs_hz))
+    return duration_n_resampled
+
+
+def get_vqvae_top_resolution_n() -> int:
+    """Return the duration in seconds of one column of the VQVAE's top layer"""
+    global vqvae
+    assert vqvae is not None
+    global transformer_top
+    assert transformer_top is not None
+    global spectrograms_helper
+    assert spectrograms_helper is not None
+    global DEVICE
+    assert DEVICE is not None
+    dummy_codes_top = torch.zeros(transformer_top.shape,
+                                  dtype=torch.long).to(DEVICE).unsqueeze(0)
+    dummy_codes_bottom = torch.zeros(transformer_bottom.shape,
+                                     dtype=torch.long).to(DEVICE).unsqueeze(0)
+    decoded_audio = spectrograms_helper.to_audio(
+        vqvae.decode_code(dummy_codes_top, dummy_codes_bottom))
+    _, duration_top = transformer_top.shape
+    return decoded_audio.shape[-1] // duration_top
+
+
+def adapt_duration(audio_file_path: str) -> float:
+    """Adapt duration of a file for loading
+
+    Accounts for both the max duration and the VQ-VAE's resolution
+    """
+    global MAX_SOUND_DURATION_S
+    assert MAX_SOUND_DURATION_S is not None
+    global FS_HZ
+    assert FS_HZ is not None
+    duration_n = get_duration_sox_n(audio_file_path)
+    # trim to max duration
+    duration_n = min(MAX_SOUND_DURATION_S * FS_HZ, duration_n)
+    # round-up to the resolution of the VQVAE
+    vqvae_top_resolution_n = get_vqvae_top_resolution_n()
+    duration_n = vqvae_top_resolution_n * (max(
+        1, 1 + duration_n // vqvae_top_resolution_n))
+    return duration_n
+
+
 @app.route('/analyze-audio', methods=['POST'])
 @torch.no_grad()
 def audio_to_codes():
     global vqvae
     assert vqvae is not None
     global spectrograms_helper
+    assert spectrograms_helper is not None
     global DEVICE
     assert DEVICE is not None
     global FS_HZ
     assert FS_HZ is not None
-    global SOUND_DURATION_S
-    assert SOUND_DURATION_S is not None
 
     pitch = int(request.args.get('pitch'))
     instrument_family_str = str(request.args.get('instrument_family_str'))
@@ -488,8 +550,9 @@ def audio_to_codes():
     with tempfile.NamedTemporaryFile(
             'w+b', suffix=request.files['audio'].filename) as f:
         request.files['audio'].save(f.name)
+        duration_n = adapt_duration(f.name)
         spec_and_IF = spectrograms_helper.from_wavfile(
-            f.name, duration_s=SOUND_DURATION_S).to(DEVICE)
+            f.name, duration_n=duration_n).to(DEVICE)
 
     _, _, _, top_code, bottom_code, *_ = vqvae.encode(spec_and_IF)
 
@@ -508,6 +571,21 @@ def audio_to_codes():
                              class_conditioning_top_map,
                              class_conditioning_bottom_map)
     return response
+
+
+def make_time_indexes(start_index: int, codemap_duration: int,
+                      transformer_duration: int) -> List[int]:
+    time_indexes_full = [0]  # attack
+    num_steps_to_repeat = transformer_duration - 2
+    steps_repetitions = (codemap_duration - 2) // num_steps_to_repeat
+    for i in range(num_steps_to_repeat - 1):
+        time_indexes_full += [i+1] * steps_repetitions
+    time_indexes_full += [num_steps_to_repeat] * (
+        (codemap_duration - 2) - (len(time_indexes_full)-1))
+    time_indexes_full += [transformer_duration-1]
+
+    return time_indexes_full[start_index:
+                             start_index+transformer_duration]
 
 
 @app.route('/timerange-change', methods=['POST'])
@@ -573,6 +651,13 @@ def timerange_change():
     bottom_code_frame = bottom_code[..., start_index_bottom:end_index_bottom]
     generation_mask_batched = parse_mask(request).to(DEVICE)
 
+    time_indexes_top = make_time_indexes(start_index_top,
+                                         top_code.shape[-1],
+                                         transformer_top.shape[-1])
+    time_indexes_bottom = make_time_indexes(start_index_bottom,
+                                            bottom_code.shape[-1],
+                                            transformer_bottom.shape[-1])
+
     if layer == 'bottom':
         if not uniform_sampling:
             bottom_code_resampled_frame = partial_sample_model(
@@ -584,7 +669,9 @@ def timerange_change():
                 class_conditioning=class_conditioning_tensors_bottom,
                 local_class_conditioning_map=class_conditioning_bottom_map,
                 initial_code=bottom_code_frame,
-                mask=generation_mask_batched
+                mask=generation_mask_batched,
+                time_indexes_source=time_indexes_top,
+                time_indexes_target=time_indexes_bottom,
             )
         else:
             bottom_code_resampled_frame = bottom_code_frame.masked_scatter(
@@ -592,7 +679,6 @@ def timerange_change():
                 torch.randint_like(bottom_code_frame,
                                    high=transformer_bottom.n_class_out)
             )
-            print(bottom_code_frame - bottom_code_resampled_frame)
 
         bottom_code_resampled = bottom_code
         bottom_code_resampled[..., start_index_bottom:end_index_bottom] = (
@@ -629,7 +715,9 @@ def timerange_change():
                 class_conditioning=class_conditioning_tensors_top,
                 local_class_conditioning_map=class_conditioning_top_map,
                 initial_code=top_code_frame,
-                mask=generation_mask_batched
+                mask=generation_mask_batched,
+                time_indexes_source=time_indexes_top,
+                time_indexes_target=time_indexes_top,
             )
         else:
             top_code_resampled_frame = top_code_frame.masked_scatter(
@@ -659,7 +747,9 @@ def timerange_change():
             class_conditioning=class_conditioning_tensors_bottom,
             local_class_conditioning_map=class_conditioning_bottom_map,
             initial_code=bottom_code_frame,
-            mask=generation_mask_bottom_batched
+            mask=generation_mask_bottom_batched,
+            time_indexes_source=time_indexes_top,
+            time_indexes_target=time_indexes_bottom,
         )
 
         # update conditioning map
@@ -696,24 +786,37 @@ def erase():
     global DEVICE
     assert DEVICE is not None
 
-    layer = str(request.args.get('layer'))
     amplitude = float(request.args.get('eraser_amplitude'))
+    start_index_top = int(request.args.get('start_index_top'))
 
-    top_code, bottom_code = parse_codes(request)
+    top_code_batched, bottom_code_batched = parse_codes(request)
     generation_mask = parse_mask(request).to(DEVICE)[0]
 
-    logmelspectrogram, IF = vqvae.decode_code(top_code,
-                                              bottom_code)[0]
+    logmelspectrogram, IF = vqvae.decode_code(top_code_batched,
+                                              bottom_code_batched)[0]
 
-    upsampling_f = logmelspectrogram.shape[0] // generation_mask.shape[0]
-    upsampling_t = logmelspectrogram.shape[1] // generation_mask.shape[1]
+    top_code = top_code_batched[0]
+    upsampling_f = logmelspectrogram.shape[0] // top_code.shape[0]
+    upsampling_t = logmelspectrogram.shape[1] // top_code.shape[1]
 
     upsampled_mask = (generation_mask.float().flip(0)
                       .repeat_interleave(upsampling_f, 0)
                       .repeat_interleave(upsampling_t, 1)
                       ).flip(0)
     amplitude_mask = 200 * amplitude * upsampled_mask
-    # amplitude_mask = 1 - upsampled_mask
+
+    # zero-pad the amplitude mask
+    padding_before = torch.zeros(logmelspectrogram.shape[0],
+                                 upsampling_t * start_index_top)
+    padding_after = torch.zeros(logmelspectrogram.shape[0],
+                                max(0,
+                                    upsampling_t * (
+                                        top_code.shape[1] - (
+                                            start_index_top + generation_mask.shape[1]))))
+    amplitude_mask = torch.cat([
+        padding_before.to(DEVICE),
+        amplitude_mask,
+        padding_after.to(DEVICE)], dim=1)
 
     masked_logmelspectrogram_and_IF = torch.cat(
         [(logmelspectrogram - amplitude_mask).unsqueeze(0),
@@ -900,7 +1003,6 @@ def top_conditioned_sample():
 
     logmelspectrogram_and_IF = vqvae.decode_code(top_code,
                                                  bottom_code)
-    print(logmelspectrogram_and_IF.shape)
 
     zip_path = upload_directory + 'samples.zip'
     with ZipFile(zip_path, 'w') as zf:
