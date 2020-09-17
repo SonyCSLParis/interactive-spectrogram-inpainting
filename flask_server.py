@@ -525,13 +525,16 @@ def adapt_duration(audio_file_path: str) -> float:
     assert MAX_SOUND_DURATION_S is not None
     global FS_HZ
     assert FS_HZ is not None
+    global transformer_top
+    assert transformer_top is not None
     duration_n = get_duration_sox_n(audio_file_path)
     # trim to max duration
     duration_n = min(MAX_SOUND_DURATION_S * FS_HZ, duration_n)
     # round-up to the resolution of the VQVAE
     vqvae_top_resolution_n = get_vqvae_top_resolution_n()
     duration_n = vqvae_top_resolution_n * (max(
-        1, 1 + duration_n // vqvae_top_resolution_n))
+        transformer_top.shape[1],
+        1 + duration_n // vqvae_top_resolution_n))
     return duration_n
 
 
@@ -1030,7 +1033,7 @@ def top_conditioned_sample():
 
 
 def write_audio_to_file(audio: torch.Tensor, sample_id: str = ''):
-    """Generate and send MP3 file
+    """Generate and send WAV file
     """
     global FS_HZ
     assert FS_HZ is not None
