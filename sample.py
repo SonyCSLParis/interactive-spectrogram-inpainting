@@ -332,10 +332,12 @@ def sample_model(model: PixelSNAIL, device: Union[torch.device, str],
 
             correct_predictions_ratio = (correct_predictions
                                          / mask_sequence.shape[-1])
-            print("Ratio of correct predictions:",
-                  correct_predictions_ratio,
-                  "===> Relative speedup:",
-                  1 / (1 - correct_predictions_ratio))
+
+    if use_predictive_sampling:
+        print(f"Ratio of correct predictions: "
+              f"{correct_predictions_ratio:.2f}"
+              " ===> Relative speedup: "
+              f"{1 / (1 - correct_predictions_ratio):.2f}")
 
     codemap = model.target_codemaps_helper.to_time_frequency_map(
         codemap_as_sequence).long()
