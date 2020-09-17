@@ -1,5 +1,6 @@
 from vqvae import VQVAE
-from transformer import VQNSynthTransformer
+from transformer import (SelfAttentiveVQTransformer, UpsamplingVQTransformer,
+                         VQNSynthTransformer)
 from sample import (sample_model, make_conditioning_tensors,
                     ConditioningMap, make_conditioning_map)
 from dataset import LMDBDataset
@@ -233,7 +234,7 @@ def init_app(vqvae_model_parameters_path: pathlib.Path,
 
     global transformer_top
     print("Load top-layer Transformer")
-    transformer_top = VQNSynthTransformer.from_parameters_and_weights(
+    transformer_top = SelfAttentiveVQTransformer.from_parameters_and_weights(
         expand_path(prediction_top_parameters_path),
         expand_path(prediction_top_weights_path),
         device=DEVICE
@@ -241,7 +242,7 @@ def init_app(vqvae_model_parameters_path: pathlib.Path,
     transformer_top.eval().to(DEVICE)
     print("Load bottom-layer Transformer")
     global transformer_bottom
-    transformer_bottom = VQNSynthTransformer.from_parameters_and_weights(
+    transformer_bottom = UpsamplingVQTransformer.from_parameters_and_weights(
         expand_path(prediction_bottom_parameters_path),
         expand_path(prediction_bottom_weights_path),
         device=DEVICE
@@ -677,7 +678,7 @@ def timerange_change():
             bottom_code_resampled_frame = bottom_code_frame.masked_scatter(
                 generation_mask_batched,
                 torch.randint_like(bottom_code_frame,
-                                   high=transformer_bottom.n_class_out)
+                                   high=transformer_bottom.n_class_target)
             )
 
         bottom_code_resampled = bottom_code
@@ -723,7 +724,7 @@ def timerange_change():
             top_code_resampled_frame = top_code_frame.masked_scatter(
                 generation_mask_batched,
                 torch.randint_like(top_code_frame,
-                                   high=transformer_top.n_class_out)
+                                   high=transformer_top.n_class_target)
             )
 
         top_code_resampled = top_code

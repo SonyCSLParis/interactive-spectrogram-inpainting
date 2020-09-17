@@ -1,7 +1,7 @@
 from typing import Mapping, List, Optional, Union
 import torch
 from torch import nn, optim
-from transformer import VQNSynthTransformer
+from transformer import SelfAttentiveVQTransformer, UpsamplingVQTransformer
 
 bottom_model_parameters: Mapping[str, Optional[Union[int,
                                                      List[int],
@@ -56,15 +56,12 @@ batch_size = 2
 embedding_dim = 3
 
 top_model_parameters = bottom_model_parameters.copy()
-top_model_parameters['self_conditional_model'] = True
-top_model_parameters['add_mask_token_to_symbols'] = True
-
 for condition_shape in [[32, 4], [64, 8], [128, 16]]:
     bottom_model_parameters['condition_shape'] = condition_shape
     top_model_parameters['shape'] = condition_shape
     top_model_parameters['condition_shape'] = condition_shape
 
-    top_model = VQNSynthTransformer(**top_model_parameters)
+    top_model = SelfAttentiveVQTransformer(**top_model_parameters)
 
     top_frequencies, top_duration = condition_shape
 
@@ -74,17 +71,17 @@ for condition_shape in [[32, 4], [64, 8], [128, 16]]:
 
     layer = 'top'
     kind = 'source'
-    top_flattened = top_model.flatten_map(top_codemap,
-                                          kind=kind)
-    top_remapped = top_model.to_time_frequency_map(top_flattened,
-                                                   kind=kind)
+    top_flattened = top_model.source_codemaps_helper.to_sequence(
+        top_codemap)
+    top_remapped = top_model.source_codemaps_helper.to_time_frequency_map(
+        top_flattened)
     check_equality_codemap(top_codemap, top_remapped, kind, layer)
 
     kind = 'target'
-    top_flattened_as_target = top_model.flatten_map(top_codemap,
-                                                    kind=kind)
-    top_remapped_as_target = top_model.to_time_frequency_map(
-        top_flattened_as_target, kind=kind)
+    top_flattened_as_target = top_model.target_codemaps_helper.to_sequence(
+        top_codemap)
+    top_remapped_as_target = top_model.target_codemaps_helper.to_time_frequency_map(
+        top_flattened_as_target)
     check_equality_codemap(top_codemap, top_remapped_as_target, kind, layer)
 
     layer = 'bottom'
@@ -94,15 +91,15 @@ for condition_shape in [[32, 4], [64, 8], [128, 16]]:
         if condition_shape[0] >= shape[0]:
             continue
         bottom_model_parameters['shape'] = shape
-        bottom_model = VQNSynthTransformer(**bottom_model_parameters)
+        bottom_model = UpsamplingVQTransformer(**bottom_model_parameters)
 
         bottom_frequencies, bottom_duration = shape
         bottom_codemap = (torch.arange(bottom_frequencies * bottom_duration)
                           .reshape(1, bottom_frequencies, bottom_duration, 1)
                           .repeat(batch_size, 1, 1, embedding_dim))
 
-        bottom_flattened = bottom_model.flatten_map(bottom_codemap,
-                                                    kind=kind)
+        bottom_flattened = bottom_model.target_codemaps_helper.to_sequence(
+            bottom_codemap)
         target_duration_per_patch = bottom_model.target_duration // bottom_model.source_duration
         target_frequencies_per_patch = bottom_model.target_frequencies // bottom_model.source_frequencies
 
@@ -121,6 +118,6 @@ for condition_shape in [[32, 4], [64, 8], [128, 16]]:
             target_expected_first_patch,
             kind, layer)
 
-        bottom_remapped = bottom_model.to_time_frequency_map(bottom_flattened,
-                                                             kind=kind)
+        bottom_remapped = bottom_model.target_codemaps_helper.to_time_frequency_map(
+            bottom_flattened)
         check_equality_codemap(bottom_codemap, bottom_remapped, kind, layer)

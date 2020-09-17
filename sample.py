@@ -21,7 +21,8 @@ from torchvision.utils import save_image
 from dataset import LMDBDataset
 from vqvae import VQVAE
 from pixelsnail import PixelSNAIL
-from transformer import VQNSynthTransformer
+from transformer import (SelfAttentiveVQTransformer, UpsamplingVQTransformer,
+                         Seq2SeqInputKind)
 import utils as vqvae_utils
 
 if torch.cuda.is_available():
@@ -221,14 +222,9 @@ def sample_model(model: PixelSNAIL, device: Union[torch.device, str],
         time_indexes_target=time_indexes_target
     )
 
-    if model.conditional_model:
-        kind = 'target'
-        input_sequence = target_sequence
-        condition_sequence = source_sequence
-    else:
-        kind = 'source'
-        input_sequence = source_sequence
-        condition_sequence = None
+    kind = Seq2SeqInputKind.Target
+    input_sequence = target_sequence
+    condition_sequence = source_sequence
 
     sequence_duration_without_start_symbol: int = (
         model.target_transformer_sequence_length)
@@ -236,24 +232,24 @@ def sample_model(model: PixelSNAIL, device: Union[torch.device, str],
     source_start_symbol_duration = model.source_start_symbol.shape[1]
     target_start_symbol_duration = model.target_start_symbol.shape[1]
 
-    codemap_as_sequence = model.flatten_map(codemap, kind=kind)
+    codemap_as_sequence = model.target_codemaps_helper.to_sequence(codemap)
 
     if mask is not None:
-        mask = model.flatten_map(mask, kind=kind).squeeze(0)
+        mask_sequence = model.target_codemaps_helper.to_sequence(mask).squeeze(0)
     else:
-        mask = torch.full((sequence_duration_without_start_symbol, ),
-                          True, dtype=bool)
+        mask_sequence = torch.full((sequence_duration_without_start_symbol, ),
+                                   True, dtype=bool)
+    mask_sequence = mask_sequence.cpu().numpy()
 
     class_condition_sequence = None
     if model.local_class_conditioning:
         class_condition_sequence = (
-            model.make_condition_sequence(class_conditioning_tensors)
+            model.make_class_conditioning_sequence(class_conditioning_tensors)
             )
 
     memory = None
-    for i in progressbar_decorator(range(
-            sequence_duration_without_start_symbol)):
-        if not mask[i]:
+    for i, is_unmasked in progressbar_decorator(enumerate(mask_sequence)):
+        if not is_unmasked:
             continue
 
         logits_sequence_out, memory = parallel_model(
@@ -283,8 +279,8 @@ def sample_model(model: PixelSNAIL, device: Union[torch.device, str],
             condition_sequence[:, i+source_start_symbol_duration, :model.embeddings_effective_dim] = (
                 embedded_sample)
 
-    codemap = model.to_time_frequency_map(codemap_as_sequence,
-                                          kind=kind).long()
+    codemap = model.target_codemaps_helper.to_time_frequency_map(
+        codemap_as_sequence).long()
 
     return codemap
 
@@ -397,7 +393,7 @@ if __name__ == '__main__':
     if args.model_type_top == 'PixelSNAIL':
         ModelTop = PixelSNAIL
     elif args.model_type_top == 'Transformer':
-        ModelTop = VQNSynthTransformer
+        ModelTop = SelfAttentiveVQTransformer
     else:
         raise ValueError(
             f"Unexpected value {args.model_type_top} for option model_type_top")
@@ -405,7 +401,7 @@ if __name__ == '__main__':
     if args.model_type_bottom == 'PixelSNAIL':
         ModelBottom = PixelSNAIL
     elif args.model_type_bottom == 'Transformer':
-        ModelBottom = VQNSynthTransformer
+        ModelBottom = UpsamplingVQTransformer
     else:
         raise ValueError(
             f"Unexpected value {args.model_type_bottom} for option model_type_bottom")

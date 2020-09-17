@@ -24,7 +24,8 @@ from torch.utils.tensorboard.writer import SummaryWriter
 
 from dataset import LMDBDataset
 from pixelsnail import PixelSNAIL, LabelSmoothingLoss
-from transformer import VQNSynthTransformer
+from transformer import (VQNSynthTransformer,
+                         SelfAttentiveVQTransformer, UpsamplingVQTransformer)
 from scheduler import CycleScheduler, get_cosine_schedule_with_warmup
 from sequence_mask import (SequenceMask, BernoulliSequenceMask,
                            UniformProbabilityBernoulliSequenceMask,
@@ -180,7 +181,7 @@ def run_model(args, epoch: int, loader: DataLoader, model: VQNSynthTransformer,
 
                 if model.local_class_conditioning:
                     class_condition_sequence = (
-                        model.make_condition_sequence(
+                        model.make_class_conditioning_sequence(
                             class_conditioning_tensors
                             )
                         )
@@ -522,6 +523,7 @@ if __name__ == '__main__':
 
     shape_top, shape_bottom = (list(dataset[0][i].shape) for i in range(2))
     if args.hier == 'top':
+        prediction_model = SelfAttentiveVQTransformer
         model = prediction_model(
             shape=shape_top,
             n_class=512,
@@ -539,7 +541,6 @@ if __name__ == '__main__':
 
             conditional_model=args.self_conditional_model,
             self_conditional_model=args.self_conditional_model,
-            add_mask_token_to_symbols=args.self_conditional_model,
             condition_shape=shape_top if args.self_conditional_model else None,
             local_class_conditioning=args.use_local_class_conditioning,
             positional_class_conditioning=args.positional_class_conditioning,
@@ -566,6 +567,7 @@ if __name__ == '__main__':
             disable_start_symbol_DEBUG=args.disable_start_symbol_DEBUG,
         )
     elif args.hier == 'bottom':
+        prediction_model = UpsamplingVQTransformer
         model = prediction_model(
             shape=shape_bottom,
             n_class=512,
