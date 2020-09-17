@@ -67,6 +67,7 @@ SPECTROGRAMS_UPSAMPLING_FACTOR: Optional[int] = None
 USE_LOCAL_CONDITIONING: Optional[bool] = None
 TOP_K: Optional[int] = None
 TOP_P: Optional[float] = None
+USE_PREDICTIVE_SAMPLING: bool = False
 
 partial_sample_model = None
 
@@ -169,6 +170,8 @@ def make_spectrogram_image(spectrogram: torch.Tensor,
               default=True)
 @click.option('--sampling_top_k', default=0)
 @click.option('--sampling_top_p', default=0.)
+@click.option('--use_predictive_sampling/--no_predictive_sampling',
+              default=False)
 @click.option('--device', type=click.Choice(['cuda', 'cpu'],
                                             case_sensitive=False),
               default='cuda')
@@ -192,6 +195,7 @@ def init_app(vqvae_model_parameters_path: pathlib.Path,
              use_local_conditioning: bool,
              sampling_top_k: int,
              sampling_top_p: float,
+             use_predictive_sampling: bool,
              device: str,
              port: int,
              ):
@@ -203,6 +207,7 @@ def init_app(vqvae_model_parameters_path: pathlib.Path,
     global USE_LOCAL_CONDITIONING
     global TOP_K
     global TOP_P
+    global USE_PREDICTIVE_SAMPLING
     global partial_sample_model
     FS_HZ = fs_hz
     HOP_LENGTH = hop_length
@@ -212,6 +217,7 @@ def init_app(vqvae_model_parameters_path: pathlib.Path,
     USE_LOCAL_CONDITIONING = use_local_conditioning
     TOP_K = sampling_top_k
     TOP_P = sampling_top_p
+    USE_PREDICTIVE_SAMPLING = use_predictive_sampling
 
     global vqvae
     print("Load VQ-VAE")
@@ -274,7 +280,8 @@ def init_app(vqvae_model_parameters_path: pathlib.Path,
         sample_model,
         device=DEVICE,
         top_k_sampling_k=TOP_K,
-        top_p_sampling_p=TOP_P
+        top_p_sampling_p=TOP_P,
+        use_predictive_sampling=USE_PREDICTIVE_SAMPLING
     )
 
     os.makedirs('./uploads', exist_ok=True)

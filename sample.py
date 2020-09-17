@@ -143,6 +143,7 @@ def sample_model(model: PixelSNAIL, device: Union[torch.device, str],
                  top_p_sampling_p: float = 0.0,
                  # this option allows to drop-in tqdm_notebook when needed
                  progressbar_decorator=tqdm,
+                 use_predictive_sampling: bool=False  # https://arxiv.org/abs/2002.09928
                  ):
     """Generate a sample from the provided PixelSNAIL
 
@@ -247,10 +248,32 @@ def sample_model(model: PixelSNAIL, device: Union[torch.device, str],
             model.make_class_conditioning_sequence(class_conditioning_tensors)
             )
 
+    if use_predictive_sampling:
+        # sample Gumbel noise for categorical categorical reparametrization trick
+        # standard Gumbel distribution
+        gumbel_noise_shape = codemap_as_sequence.shape + (model.n_class_target,)
+        standard_gumbel_distribution = torch.distributions.gumbel.Gumbel(
+            torch.zeros(gumbel_noise_shape), 1)
+        standard_gumbel_sample = standard_gumbel_distribution.sample()
+    else:
+        standard_gumbel_sample = None
+
     memory = None
+    prediction_was_correct = False
+    correct_predictions = 0
+    sample = None
+    previous_codemap_as_sequence = codemap_as_sequence
     for i, is_unmasked in progressbar_decorator(enumerate(mask_sequence)):
         if not is_unmasked:
             continue
+        if (use_predictive_sampling
+                and sample is not None
+                and prediction_was_correct):
+            prediction_was_correct = torch.all(
+                sample[:, i] == previous_codemap_as_sequence[:, i])
+            if prediction_was_correct:
+                correct_predictions += 1
+                continue
 
         logits_sequence_out, memory = parallel_model(
             input_sequence, condition_sequence,
@@ -262,22 +285,57 @@ def sample_model(model: PixelSNAIL, device: Union[torch.device, str],
         logits_sequence_out = top_k_top_p_filtering(logits_sequence_out,
                                                     top_k=top_k_sampling_k,
                                                     top_p=top_p_sampling_p)
-
         next_step_probabilities = torch.softmax(
-            logits_sequence_out[:, i, :], dim=1)
+                logits_sequence_out, dim=-1)
 
-        sample = torch.multinomial(next_step_probabilities, 1).squeeze(-1)
-        codemap_as_sequence[:, i] = sample.long()
+        if not use_predictive_sampling:
+            sample = torch.multinomial(next_step_probabilities[:, i, :], 1
+                                       ).squeeze(-1)
 
-        embedded_sample = model.embed_data(sample, kind)
-        # translate to account for the added start_symbol!
-        input_sequence[:, i+target_start_symbol_duration, :model.embeddings_effective_dim] = (
-            embedded_sample)
-        if model.self_conditional_model:
-            # the cached memory remains valid here,
-            # because the Top encoder uses anti-causal attention
-            condition_sequence[:, i+source_start_symbol_duration, :model.embeddings_effective_dim] = (
+            codemap_as_sequence[:, i] = sample.long()
+
+            embedded_sample = model.embed_data(sample, kind)
+            # translate to account for the added start_symbol!
+            input_sequence[:, i+target_start_symbol_duration, :model.embeddings_effective_dim] = (
                 embedded_sample)
+            if model.self_conditional_model:
+                condition_sequence[:, i+source_start_symbol_duration, :model.embeddings_effective_dim] = (
+                    embedded_sample)
+                # no update to the cached memory which remains valid here,
+                # because the Top encoder uses anti-causal attention
+        else:
+            # Gumbel reparametrization trick
+            sample = torch.argmax(
+                torch.log(next_step_probabilities) + standard_gumbel_sample,
+                dim=-1)
+
+            prediction_was_correct = torch.all(
+                sample[:, i].long() == codemap_as_sequence[:, i])
+            previous_codemap_as_sequence = codemap_as_sequence.clone()
+
+            causal_and_inpainting_mask = (
+                torch.as_tensor(mask_sequence).bool()
+                * (torch.arange(mask_sequence.shape[-1]) >= i).unsqueeze(0)
+            ).bool()
+            codemap_as_sequence[causal_and_inpainting_mask] = sample[causal_and_inpainting_mask]
+
+            embedded_sample = model.embed_data(sample, kind)
+            # translate to account for the added start_symbol!
+            embeddings_causal_and_inpainting_mask = causal_and_inpainting_mask.unsqueeze(-1).expand(-1, -1, model.embeddings_effective_dim)
+            input_sequence[:, target_start_symbol_duration:, :model.embeddings_effective_dim][embeddings_causal_and_inpainting_mask] = (
+                embedded_sample[embeddings_causal_and_inpainting_mask])
+            if model.self_conditional_model:
+                condition_sequence[:, source_start_symbol_duration:, :model.embeddings_effective_dim][embeddings_causal_and_inpainting_mask] = (
+                    embedded_sample[embeddings_causal_and_inpainting_mask])
+                # no update to the cached memory which remains valid here,
+                # because the Top encoder uses anti-causal attention
+
+            correct_predictions_ratio = (correct_predictions
+                                         / mask_sequence.shape[-1])
+            print("Ratio of correct predictions:",
+                  correct_predictions_ratio,
+                  "===> Relative speedup:",
+                  1 / (1 - correct_predictions_ratio))
 
     codemap = model.target_codemaps_helper.to_time_frequency_map(
         codemap_as_sequence).long()
