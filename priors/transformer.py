@@ -9,8 +9,8 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
-from codemaps_helpers import (CodemapsHelper,
-                              SimpleCodemapsHelper, ZigZagCodemapsHelper)
+from .codemaps_helpers import (CodemapsHelper,
+                               SimpleCodemapsHelper, ZigZagCodemapsHelper)
 from VQCPCB.transformer.transformer_custom import (
     TransformerCustom, TransformerDecoderCustom, TransformerEncoderCustom,
     TransformerDecoderLayerCustom, TransformerEncoderLayerCustom,

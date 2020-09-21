@@ -2,13 +2,11 @@ from typing import Optional, Iterable, Union, List, Mapping, Tuple
 import numpy as np
 import pathlib
 import json
-import functools
 
 import torch
 from torch import nn
 from torch.nn import functional as F
 
-import GANsynth_pytorch
 from GANsynth_pytorch.loader import make_masked_phase_transform
 from GANsynth_pytorch.normalizer import (DataNormalizer,
                                          DataNormalizerStatistics)

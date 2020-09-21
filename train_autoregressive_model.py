@@ -22,15 +22,17 @@ except ModuleNotFoundError:
 
 from torch.utils.tensorboard.writer import SummaryWriter
 
-from dataset import LMDBDataset
-from pixelsnail import PixelSNAIL, LabelSmoothingLoss
-from transformer import (VQNSynthTransformer,
-                         SelfAttentiveVQTransformer, UpsamplingVQTransformer)
-from scheduler import CycleScheduler, get_cosine_schedule_with_warmup
-from sequence_mask import (SequenceMask, BernoulliSequenceMask,
-                           UniformProbabilityBernoulliSequenceMask,
-                           UniformMaskedAmountSequenceMask,
-                           ContiguousZonesSequenceMask)
+from utils.datasets.lmdb_dataset import LMDBDataset
+from utils.losses.prediction import LabelSmoothingLoss
+from priors.transformer import (VQNSynthTransformer,
+                                SelfAttentiveVQTransformer,
+                                UpsamplingVQTransformer)
+from utils.training.scheduler import (
+    CycleScheduler, get_cosine_schedule_with_warmup)
+from priors.sequence_mask import (
+    SequenceMask, BernoulliSequenceMask,
+    UniformProbabilityBernoulliSequenceMask,
+    UniformMaskedAmountSequenceMask, ContiguousZonesSequenceMask)
 
 # use matplotlib without an X server
 # on desktop, this prevents matplotlib windows from popping around
@@ -462,9 +464,7 @@ if __name__ == '__main__':
 
     print(args)
 
-    if args.model_type == 'PixelSNAIL':
-        prediction_model = PixelSNAIL
-    elif args.model_type == 'Transformer':
+    if args.model_type == 'Transformer':
         prediction_model = VQNSynthTransformer
 
     run_ID = (f'{args.model_type}-{args.hier}_layer-'
@@ -630,7 +630,7 @@ if __name__ == '__main__':
 
     model = model.to(device)
 
-    MAIN_DIR = pathlib.Path(DIRPATH)
+    MAIN_DIR = pathlib.Path(DIRPATH) / 'data'
     CHECKPOINTS_DIR_PATH = (
         MAIN_DIR
         / f'checkpoints/code_prediction/vqvae-{args.vqvae_run_id}/{run_ID}/')

@@ -18,12 +18,13 @@ from torch import nn
 from torch.nn import functional as F
 from torchvision.utils import save_image
 
-from dataset import LMDBDataset
-from vqvae import VQVAE
-from pixelsnail import PixelSNAIL
-from transformer import (SelfAttentiveVQTransformer, UpsamplingVQTransformer,
-                         Seq2SeqInputKind)
-import utils as vqvae_utils
+from utils.datasets.lmdb_dataset import LMDBDataset
+from vqvae.vqvae import VQVAE
+from priors.transformer import (
+    VQNSynthTransformer,
+    SelfAttentiveVQTransformer, UpsamplingVQTransformer,
+    Seq2SeqInputKind)
+from utils.misc import get_spectrograms_helper
 
 if torch.cuda.is_available():
     torch.set_default_tensor_type(torch.cuda.FloatTensor)
@@ -129,7 +130,7 @@ def make_conditioning_map(class_conditioning: Mapping[str, ConditioningMap],
 
 
 @torch.no_grad()
-def sample_model(model: PixelSNAIL, device: Union[torch.device, str],
+def sample_model(model: VQNSynthTransformer, device: Union[torch.device, str],
                  batch_size: int, codemap_size: Iterable[int],
                  temperature: float, condition: Optional[torch.Tensor] = None,
                  constraint: Optional[torch.Tensor] = None,
@@ -394,11 +395,11 @@ if __name__ == '__main__':
     parser.add_argument('--dataset', type=str, choices=['nsynth', 'imagenet'],
                         required=True)
     parser.add_argument('--model_type_top', type=str,
-                        choices=['PixelSNAIL', 'Transformer'],
-                        default='PixelSNAIL')
+                        choices=['Transformer'],
+                        default='Transformer')
     parser.add_argument('--model_type_bottom', type=str,
-                        choices=['PixelSNAIL', 'Transformer'],
-                        default='PixelSNAIL')
+                        choices=['Transformer'],
+                        default='Transformer')
     parser.add_argument('--vqvae_training_parameters_path', type=str, required=True)
     parser.add_argument('--vqvae_model_parameters_path', type=str, required=True)
     parser.add_argument('--vqvae_weights_path', type=str, required=True)
@@ -450,17 +451,13 @@ if __name__ == '__main__':
 
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
-    if args.model_type_top == 'PixelSNAIL':
-        ModelTop = PixelSNAIL
-    elif args.model_type_top == 'Transformer':
+    if args.model_type_top == 'Transformer':
         ModelTop = SelfAttentiveVQTransformer
     else:
         raise ValueError(
             f"Unexpected value {args.model_type_top} for option model_type_top")
 
-    if args.model_type_bottom == 'PixelSNAIL':
-        ModelBottom = PixelSNAIL
-    elif args.model_type_bottom == 'Transformer':
+    if args.model_type_bottom == 'Transformer':
         ModelBottom = UpsamplingVQTransformer
     else:
         raise ValueError(
@@ -487,7 +484,7 @@ if __name__ == '__main__':
     # retrieve n_fft, hop length, window length parameters...
     with open(VQVAE_TRAINING_PARAMETERS_PATH, 'r') as f:
         vqvae_training_parameters = json.load(f)
-    spectrograms_helper = vqvae_utils.get_spectrograms_helper(
+    spectrograms_helper = get_spectrograms_helper(
         device=device, **vqvae_training_parameters)
 
     def to_dictionary(key_value_list: Iterable[Tuple[any, any]]

@@ -5,8 +5,7 @@ from sample import (sample_model, make_conditioning_tensors,
                     ConditioningMap, make_conditioning_map)
 from dataset import LMDBDataset
 from GANsynth_pytorch.spectrograms_helper import SpectrogramsHelper
-import utils as vqvae_utils
-from utils import expand_path
+from utils.misc import expand_path, get_spectrograms_helper
 
 import soundfile
 from typing import Union, Tuple, Mapping, Optional, List
@@ -234,7 +233,7 @@ def init_app(vqvae_model_parameters_path: pathlib.Path,
     # retrieve n_fft, hop length, window length parameters...
     with open(VQVAE_TRAINING_PARAMETERS_PATH, 'r') as f:
         vqvae_training_parameters = json.load(f)
-    spectrograms_helper = vqvae_utils.get_spectrograms_helper(
+    spectrograms_helper = get_spectrograms_helper(
         device=device, **vqvae_training_parameters)
     spectrograms_helper.to(device)
 

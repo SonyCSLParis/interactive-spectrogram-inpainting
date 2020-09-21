@@ -17,9 +17,6 @@ from torch.utils.data import DataLoader
 from torchvision import datasets, transforms, utils
 from torch.utils.tensorboard.writer import SummaryWriter
 
-from vqvae import VQVAE
-from scheduler import CycleScheduler
-
 from pytorch_nsynth import NSynth
 from GANsynth_pytorch.spectrograms_helper import (SpectrogramsHelper,
                                                   MelSpectrogramsHelper)
@@ -28,6 +25,9 @@ from GANsynth_pytorch.loader import (WavToSpectrogramDataLoader,
 from GANsynth_pytorch.normalizer import DataNormalizer
 import GANsynth_pytorch.utils.plots as gansynthplots
 from GANsynth_pytorch.spec_ops import _MEL_BREAK_FREQUENCY_HERTZ
+
+from vqvae.vqvae import VQVAE
+from utils.training.scheduler import CycleScheduler
 
 import matplotlib as mpl
 # use matplotlib without an X server
@@ -481,7 +481,7 @@ if __name__ == '__main__':
             n_iter=len(loader) * args.num_training_epochs, momentum=None
         )
 
-    MAIN_DIR = pathlib.Path(DIRPATH)
+    MAIN_DIR = pathlib.Path(DIRPATH) / 'data'
     CHECKPOINTS_DIR_PATH = MAIN_DIR / f'checkpoints/{run_ID}/'
     if not (args.dry_run or args.disable_writes_to_disk):
         os.makedirs(CHECKPOINTS_DIR_PATH, exist_ok=True)

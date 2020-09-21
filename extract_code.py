@@ -1,4 +1,4 @@
-from typing import Optional, Iterable, Mapping, Union, Sequence
+from typing import Mapping
 import argparse
 import pickle
 import json
@@ -11,14 +11,12 @@ from sklearn.preprocessing import LabelEncoder
 import torch
 from torch import nn
 from torch.utils.data import DataLoader
-from torchvision import transforms, datasets, utils
 import lmdb
 from tqdm import tqdm
 
-from dataset import ImageFileDataset, CodeRow, LMDBDataset
+from utils.datasets.lmdb_dataset import CodeRow, LMDBDataset
 from vqvae import VQVAE
-import utils as vqvae_utils
-from utils import expand_path
+from utils.misc import expand_path, get_spectrograms_helper
 
 from pytorch_nsynth import NSynth
 from GANsynth_pytorch.loader import WavToSpectrogramDataLoader
@@ -39,7 +37,8 @@ def extract(lmdb_env, loader: WavToSpectrogramDataLoader,
     with lmdb_env.begin(write=True) as txn:
         pbar_loader = tqdm(loader)
 
-        # store the label encoders along with the database to allow future conversions
+        # store the label encoders along with the database
+        # this allows future conversions
         txn.put('label_encoders'.encode('utf-8'), pickle.dumps(label_encoders))
 
         attribute_names = label_encoders.keys()
@@ -56,7 +55,8 @@ def extract(lmdb_env, loader: WavToSpectrogramDataLoader,
             for top, bottom, *attributes, sample_name in zip(
                     id_t, id_b, *categorical_attributes_batch, sample_names):
                 row = CodeRow(top=top, bottom=bottom,
-                              attributes=dict(zip(attribute_names, attributes)),
+                              attributes=dict(zip(attribute_names,
+                                                  attributes)),
                               filename=sample_name)
                 txn.put(str(index).encode('utf-8'), pickle.dumps(row))
                 index += 1
@@ -139,7 +139,7 @@ if __name__ == '__main__':
     # retrieve n_fft, hop length, window length parameters...
     with open(VQVAE_TRAINING_PARAMETERS_PATH, 'r') as f:
         vqvae_training_parameters = json.load(f)
-    spectrograms_helper = vqvae_utils.get_spectrograms_helper(
+    spectrograms_helper = get_spectrograms_helper(
         device=device, **vqvae_training_parameters)
 
     for dataset_name, json_data_path in named_dataset_json_data_paths.items():
@@ -205,12 +205,12 @@ if __name__ == '__main__':
                 audio_batch = spectrograms_helper.to_audio(
                     mag_and_IF_batch)
                 audio_mono_concatenated = (audio_batch
-                                            .flatten().cpu().numpy())
+                                           .flatten().cpu().numpy())
                 return audio_mono_concatenated
 
             audio_sample_path = os.path.join(
                 lmdb_path,
-                f'vqvae_codes_extraction_samples.wav')
+                'vqvae_codes_extraction_samples.wav')
             soundfile.write(audio_sample_path,
                             make_audio(decoded_sample),
                             samplerate=vqvae_training_parameters['fs_hz'])
