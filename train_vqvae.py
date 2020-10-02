@@ -1,21 +1,20 @@
-from typing import Optional, Union, Sequence, Dict, List
+from typing import Optional, Mapping, Dict, List
 from datetime import datetime
 import uuid
 import argparse
 import pathlib
-import pickle
 import json
 from tqdm import tqdm
 import numpy as np
 import os
 
-
 import torch
 from torch import nn, optim
 from torch.optim.optimizer import Optimizer
 from torch.utils.data import DataLoader
-from torchvision import datasets, transforms, utils
+import torchvision
 from torch.utils.tensorboard.writer import SummaryWriter
+from torch.nn.modules.loss import _Loss as Loss
 
 from pytorch_nsynth import NSynth
 from GANsynth_pytorch.spectrograms_helper import (SpectrogramsHelper,
@@ -27,6 +26,10 @@ import GANsynth_pytorch.utils.plots as gansynthplots
 from GANsynth_pytorch.spec_ops import _MEL_BREAK_FREQUENCY_HERTZ
 
 from vqvae.vqvae import VQVAE
+from vqvae.encoder_decoder import NoFlattenXResNet, NoSkipDynamicUnet
+from utils.losses.spectral import (
+    JukeboxMultiscaleSpectralLoss_fromSpectrogram,
+    DDSPMultiscaleSpectralLoss_fromSpectrogram)
 from utils.training.scheduler import CycleScheduler
 
 import matplotlib as mpl
@@ -49,7 +52,6 @@ def get_spectrograms_helper(args) -> SpectrogramsHelper:
         'n_fft': args.n_fft,
         'hop_length': args.hop_length,
         'window_length': args.window_length,
-        'device': args.device,
     }
     if args.use_mel_scale:
         return MelSpectrogramsHelper(
@@ -64,10 +66,64 @@ def get_spectrograms_helper(args) -> SpectrogramsHelper:
         return SpectrogramsHelper(**spectrogram_parameters)
 
 
-def train(epoch: int, loader: DataLoader, model: nn.Module,
+def get_reconstruction_criterion(
+        criterion_id: str,
+        spectrograms_helper: Optional[SpectrogramsHelper] = None
+        ) -> Loss:
+    if criterion_id == 'MSE':
+        return nn.MSELoss()
+    elif criterion_id in ['Jukebox', 'JukeboxMultiscaleSpectralLoss']:
+        assert spectrograms_helper is not None
+        return JukeboxMultiscaleSpectralLoss_fromSpectrogram(
+            spectrograms_helper)
+    elif criterion_id in ['DDSP', 'DDSPMultiscaleSpectralLoss']:
+        assert spectrograms_helper is not None
+        return DDSPMultiscaleSpectralLoss_fromSpectrogram(
+            spectrograms_helper)
+    else:
+        raise ValueError("Unexpected reconstruction criterion identifier "
+                         + criterion_id)
+
+
+def write_vqvae_scalars_to_tensorboard(
+        summary_writer: SummaryWriter,
+        main_tag: str,
+        global_step: int,
+        model: VQVAE,
+        latent_loss_weight: float,
+        reconstruction_criterion_name: float,
+        reconstruction_loss: float,
+        latent_loss: float,
+        codes_perplexity_top: float,
+        codes_perplexity_bottom: float,
+        ):
+    vqvae_scalars = {
+        'combined_loss': (reconstruction_loss
+                          + latent_loss_weight * latent_loss),
+        f'reconstruction_loss ({reconstruction_criterion_name})': (
+            reconstruction_loss),
+        'latent_loss': latent_loss,
+        'codes_perplexity_top': codes_perplexity_top,
+        'codes_perplexity_bottom': codes_perplexity_bottom,
+        'codes_perplexity_ratio_top': (
+            codes_perplexity_top / model.n_embed_t
+        ),
+        'codes_perplexity_ratio_bottom': (
+            codes_perplexity_bottom / model.n_embed_b
+        )
+    }
+    for scalar_name, scalar_value in vqvae_scalars.items():
+        summary_writer.add_scalar(main_tag + '/' + scalar_name,
+                                  scalar_value,
+                                  global_step=global_step)
+
+
+def train(epoch: int, loader: DataLoader, model: VQVAE,
+          reconstruction_criterion: Loss,
           optimizer: Optimizer,
           scheduler: Optional[optim.lr_scheduler._LRScheduler],
           device: str,
+          metrics: Mapping[str, Loss],
           run_id: str,
           latent_loss_weight: float = 0.25,
           enable_image_dumps: bool = False,
@@ -81,30 +137,31 @@ def train(epoch: int, loader: DataLoader, model: nn.Module,
     num_samples_in_dataset = len(loader.dataset)
 
     parallel_model = nn.DataParallel(model).to(device)
+    reconstruction_criterion.to(device)
 
     tqdm_loader = tqdm(loader, position=1)
     status_bar = tqdm(total=0, position=0, bar_format='{desc}')
 
-    criterion = nn.MSELoss()
-
     image_dump_sample_size = 25
 
-    mse_sum = 0
-    mse_n = 0
+    reconstruction_loss_accumulated = 0
+    latent_loss_accumulated = 0
+    perplexity_t_accumulated = 0
+    perplexity_b_accumulated = 0
     num_samples_seen_epoch = 0
     num_samples_seen_total = epoch * num_samples_in_dataset
 
     parallel_model.train()
-    for i, (img, _) in enumerate(tqdm_loader):
+    for i, (img, *_) in enumerate(tqdm_loader):
         parallel_model.zero_grad()
 
         img = img.to(device)
 
         out, latent_loss, perplexity_t_mean, perplexity_b_mean, *_ = (
             parallel_model(img))
-        recon_loss = criterion(out, img)
+        reconstruction_loss = reconstruction_criterion(out, img)
         latent_loss = latent_loss.mean()
-        loss = recon_loss + latent_loss_weight * latent_loss
+        loss = reconstruction_loss + latent_loss_weight * latent_loss
         loss.backward()
 
         if clip_grad_norm is not None:
@@ -115,43 +172,68 @@ def train(epoch: int, loader: DataLoader, model: nn.Module,
         if scheduler is not None:
             scheduler.step()
 
-        batch_size = img.shape[0]
-        mse_batch = recon_loss.item()
-        mse_sum += mse_batch * batch_size
+        with torch.no_grad():
+            batch_size = img.shape[0]
+            reconstruction_loss_batch = reconstruction_loss.item()
+            latent_loss_batch = latent_loss.item()
+            reconstruction_loss_accumulated += (
+                reconstruction_loss_batch * batch_size)
+            latent_loss_accumulated += (
+                latent_loss_batch * batch_size)
 
-        num_samples_seen_epoch += batch_size
-        num_samples_seen_total += batch_size
+            num_samples_seen_epoch += batch_size
 
-        lr = optimizer.param_groups[0]['lr']
+            lr = optimizer.param_groups[0]['lr']
 
-        # must take the .mean() again due to DataParallel,
-        # perplexity_t_mean is has length the number of GPUs
-        batch_perplexity_t_mean = perplexity_t_mean.mean().item()
-        batch_perplexity_b_mean = perplexity_b_mean.mean().item()
+            # must take the .mean() again due to DataParallel,
+            # perplexity_t_mean has length the number of GPUs
+            batch_perplexity_t_mean = perplexity_t_mean.mean().item()
+            perplexity_t_accumulated += batch_perplexity_t_mean * batch_size
+            batch_perplexity_b_mean = perplexity_b_mean.mean().item()
+            perplexity_b_accumulated += batch_perplexity_b_mean * batch_size
 
-        batch_reconstruction_mse = recon_loss.item()
-        batch_latent_loss = latent_loss.item()
-        status_bar.set_description_str(
-            (
-                f'epoch: {epoch + 1}; '
-                f'avg mse: {mse_sum / num_samples_seen_epoch:.4f}; mse: {mse_batch:.4f}; latent: {batch_latent_loss:.4f}; '
-                f'perpl_bottom: {batch_perplexity_b_mean:.4f}; perpl_top: {batch_perplexity_t_mean:.4f}'
-            )
-        )
+            average_reconstruction_loss_epoch = (
+                reconstruction_loss_accumulated / num_samples_seen_epoch)
+            average_latent_loss_epoch = (
+                latent_loss_accumulated / num_samples_seen_epoch)
+            average_perplexity_t_epoch = (
+                perplexity_t_accumulated / num_samples_seen_epoch)
+            average_perplexity_b_epoch = (
+                perplexity_b_accumulated / num_samples_seen_epoch)
+
+            latent_loss_batch = latent_loss.item()
+            status_bar.set_description_str((
+                f'epoch: {epoch + 1}|'
+                f'recons.: {average_reconstruction_loss_epoch:.4f}|'
+                f'latent: {average_latent_loss_epoch:.4f}|'
+                f'perpl. bottom: {average_perplexity_b_epoch:.4f}|'
+                f'perpl. top: {average_perplexity_t_epoch:.4f}'
+            ))
+
+            num_samples_seen_total += batch_size
+
         if tensorboard_writer is not None:
             # add scalar summaries
-            tensorboard_writer.add_scalar('training/reconstruction_mse',
-                                          batch_reconstruction_mse,
-                                          num_samples_seen_total)
-            tensorboard_writer.add_scalar('training/latent_loss',
-                                          batch_latent_loss,
-                                          num_samples_seen_total)
-            tensorboard_writer.add_scalar('training/perplexity_top',
-                                          batch_perplexity_t_mean,
-                                          num_samples_seen_total)
-            tensorboard_writer.add_scalar('training/perplexity_bottom',
-                                          batch_perplexity_b_mean,
-                                          num_samples_seen_total)
+            write_vqvae_scalars_to_tensorboard(
+                tensorboard_writer,
+                'vqvae-training',
+                num_samples_seen_total,
+                model,
+                latent_loss_weight,
+                type(reconstruction_criterion).__name__,
+                reconstruction_loss_batch,
+                latent_loss_batch,
+                batch_perplexity_t_mean,
+                batch_perplexity_b_mean
+                )
+
+            with torch.no_grad():
+                for metric_name, metric in metrics.items():
+                    tensorboard_writer.add_scalar(
+                        'vqvae-training-metrics/' + metric_name,
+                        metric(img, out),
+                        num_samples_seen_total
+                    )
 
         if enable_image_dumps and i % 100 == 0:
             parallel_model.eval()
@@ -166,7 +248,7 @@ def train(epoch: int, loader: DataLoader, model: nn.Module,
                                                ).unsqueeze(channel_dim)
                 out_channel = sample_out.select(channel_dim, channel_index
                                                 ).unsqueeze(channel_dim)
-                utils.save_image(
+                torchvision.utils.save_image(
                     torch.cat([sample_channel, out_channel,
                                (sample_channel-out_channel).abs()], 0),
                     os.path.join(DIRPATH, f'samples/{run_ID}/',
@@ -178,6 +260,7 @@ def train(epoch: int, loader: DataLoader, model: nn.Module,
                 )
 
             parallel_model.train()
+
         if dry_run:
             break
 
@@ -186,50 +269,128 @@ def train(epoch: int, loader: DataLoader, model: nn.Module,
 
 
 @torch.no_grad()
-def evaluate(loader: DataLoader, model: nn.Module, device: str,
+def evaluate(loader: DataLoader, model: nn.Module,
+             reconstruction_criterion: Loss,
+             device: str,
+             reconstruction_metrics: Dict[str, Loss],
              latent_loss_weight: float = 0.25,
              dry_run: bool = False):
+    """Evaluate model and return metrics averaged over a validation/test set"""
     with torch.no_grad():
-        num_samples_in_dataset = len(loader.dataset)
-
         loader = tqdm(loader, desc='validation')
 
         parallel_model = nn.DataParallel(model)
 
-        criterion = nn.MSELoss()
+        reconstruction_criterion.to(device)
 
-        mse_total = torch.zeros(1)
-        perplexity_t_total = torch.zeros(1)
-        perplexity_b_total = torch.zeros(1)
-        mse_n = torch.zeros(1)
-        latent_loss_total = torch.zeros(1)
+        reconstruction_loss_total = torch.zeros(1).to(device)
+        num_samples_seen = 0
+        perplexity_t_total = torch.zeros(1).to(device)
+        perplexity_b_total = torch.zeros(1).to(device)
+        latent_loss_total = torch.zeros(1).to(device)
+        reconstruction_metrics_total = {
+            metric_name: torch.zeros(1).to(device)
+            for metric_name in reconstruction_metrics.keys()
+        }
 
         parallel_model.eval()
-        for i, (img, _) in enumerate(loader):
+        for i, (img, *_) in enumerate(loader):
+            batch_size = img.shape[0]
             img = img.to(device)
 
             out, latent_loss, perplexity_t_mean, perplexity_b_mean, *_ = (
                 parallel_model(img))
-            recon_loss = criterion(out, img)
-            latent_loss_mean = latent_loss.mean()
-            loss = recon_loss + latent_loss_weight * latent_loss_mean
+            reconstruction_loss_batch = reconstruction_criterion(out, img)
 
-            mse_total += recon_loss * img.shape[0]
-            perplexity_t_total += perplexity_t_mean.mean() * img.shape[0]
-            perplexity_b_total += perplexity_b_mean.mean() * img.shape[0]
+            reconstruction_loss_total += reconstruction_loss_batch * batch_size
+            perplexity_t_total += perplexity_t_mean.mean() * batch_size
+            perplexity_b_total += perplexity_b_mean.mean() * batch_size
             latent_loss_total += latent_loss.sum()
-            if args.dry_run:
+
+            for metric_name, metric in reconstruction_metrics.items():
+                metric_batch = metric(img, out).item()
+                reconstruction_metrics_total[metric_name] += (
+                    metric_batch * batch_size)
+
+            num_samples_seen += batch_size
+
+            if dry_run:
                 break
 
-        mse_average = mse_total.item() / num_samples_in_dataset
-        latent_loss_average = latent_loss_total.item() / num_samples_in_dataset
+        reconstruction_loss_average = (
+            reconstruction_loss_total.item() / num_samples_seen)
+        latent_loss_average = latent_loss_total.item() / num_samples_seen
         perplexity_t_average = (perplexity_t_total.item()
-                                / num_samples_in_dataset)
+                                / num_samples_seen)
         perplexity_b_average = (perplexity_b_total.item()
-                                / num_samples_in_dataset)
+                                / num_samples_seen)
 
-        return (mse_average, latent_loss_average,
-                perplexity_t_average, perplexity_b_average)
+        reconstruction_metrics_average = {
+            metric_name: metric_total / num_samples_seen
+            for metric_name, metric_total in (
+                reconstruction_metrics_total.items())
+        }
+
+        return (reconstruction_loss_average, latent_loss_average,
+                perplexity_t_average, perplexity_b_average,
+                reconstruction_metrics_average)
+
+
+@torch.no_grad()
+def add_audio_and_image_samples_tensorboard(
+        model: VQVAE, dataloader: DataLoader,
+        tensorboard_writer: SummaryWriter,
+        num_samples: int,
+        spectrograms_helper: SpectrogramsHelper,
+        epoch_index: int,
+        subset_name: str,
+        device: str) -> None:
+    # add audio summaries to Tensorboard
+    model.eval()
+    samples, *_ = next(iter(dataloader))
+    samples = samples[:num_samples]
+    reconstructions, *_ = (vqvae.forward(samples.to(
+        device)))
+
+    samples = samples
+    reconstructions = reconstructions
+
+    samples_audio = spectrograms_helper.to_audio(
+        samples)
+    reconstructions_audio = spectrograms_helper.to_audio(
+        reconstructions)
+    tensorboard_writer.add_audio(
+        f'original-{subset_name}',
+        samples_audio.flatten(),
+        epoch_index,
+        sample_rate=spectrograms_helper.fs_hz)
+    tensorboard_writer.add_audio(
+        f'reconstructions-{subset_name}',
+        reconstructions_audio.flatten(),
+        epoch_index,
+        sample_rate=spectrograms_helper.fs_hz)
+
+    # add spectrogram plots to Tensorboards
+    mel_specs_original, mel_IFs_original = (
+        np.swapaxes(samples.data.cpu().numpy(), 0, 1))
+    mel_specs_reconstructions, mel_IFs_reconstructions = (
+        np.swapaxes(reconstructions.data.cpu().numpy(), 0, 1))
+    mel_specs = np.concatenate([mel_specs_original,
+                                mel_specs_reconstructions],
+                               axis=0)
+    mel_IFs = np.concatenate([mel_IFs_original,
+                              mel_IFs_reconstructions],
+                             axis=0)
+
+    spec_figure, _ = gansynthplots.plot_mel_representations_batch(
+        log_melspecs=mel_specs, mel_IFs=mel_IFs,
+        hop_length=spectrograms_helper.hop_length,
+        fs_hz=spectrograms_helper.fs_hz,
+        cmap='magma')
+    tensorboard_writer.add_figure(('Originals+Reconstructions_' +
+                                   'Mel_IF-' + subset_name),
+                                  spec_figure,
+                                  epoch_index)
 
 
 if __name__ == '__main__':
@@ -242,6 +403,10 @@ if __name__ == '__main__':
             setattr(namespace, self.dest, my_dict)
 
     parser = argparse.ArgumentParser()
+    parser.add_argument('--reconstruction_criterion', type=str,
+                        choices=['MSE',
+                                 'Jukebox',
+                                 'DDSP'])
     parser.add_argument('--size', type=int, default=256)
     # parser.add_argument('--strides', nargs='+', type=int, default=[2, 4],
     #                     choices=[2, 4, 8, 16])
@@ -253,6 +418,8 @@ if __name__ == '__main__':
     parser.add_argument('--use_local_kernels', action='store_true')
     parser.add_argument('--hop_length', type=int, default=512)
     parser.add_argument('--num_embeddings', type=int, default=512)
+    parser.add_argument('--disable_quantization', action='store_true')
+    parser.add_argument('--embeddings_dimension', type=int, default=64)
     parser.add_argument('--num_hidden_channels', type=int, default=128)
     parser.add_argument('--num_residual_channels', type=int, default=32)
     parser.add_argument('--num_training_epochs', type=int, default=560)
@@ -287,6 +454,9 @@ if __name__ == '__main__':
     parser.add_argument('--train_dataset_json_data_path', type=str,
                         required=True)
     parser.add_argument('--validation_dataset_json_data_path', type=str)
+    parser.add_argument('--validation_frequency', default=1, type=int,
+                        help=('Frequency (in epochs) at which to compute'
+                              'validation metrics'))
     parser.add_argument('--save_frequency', default=1, type=int,
                         help=('Frequency (in epochs) at which to save'
                               'trained weights'))
@@ -313,6 +483,7 @@ if __name__ == '__main__':
     parser.add_argument('--num_validation_samples_audio_tensorboard', type=int,
                         default=3, help=("Number of validation audio samples "
                                          "to store in Tensorboard"))
+    parser.add_argument('--test_resnet', action='store_true')
 
     args = parser.parse_args()
 
@@ -320,7 +491,9 @@ if __name__ == '__main__':
                                    or args.precomputed_normalization_statistics
                                    )
 
-    run_ID = datetime.now().strftime('%Y%m%d-%H%M%S-') + str(uuid.uuid4())[:6]
+    run_ID = ('VQVAE-' +
+              datetime.now().strftime('%Y%m%d-%H%M%S-')
+              + str(uuid.uuid4())[:6])
 
     print(args)
 
@@ -353,7 +526,8 @@ if __name__ == '__main__':
     common_dataset_parameters = {
         'valid_pitch_range': args.valid_pitch_range,
         'categorical_field_list': [],
-        'squeeze_mono_channel': True
+        'squeeze_mono_channel': True,
+        'return_full_metadata': False
     }
     nsynth_dataset = NSynth(
         audio_directory_paths=audio_directory_paths,
@@ -379,9 +553,8 @@ if __name__ == '__main__':
             batch_size=args.batch_size,
             num_workers=args.num_workers,
             shuffle=True, pin_memory=True,
+            drop_last=False
         )
-
-    in_channel = next(iter(loader))[0].shape(0)
 
     dataloader_for_gansynth_normalization = None
     normalizer_statistics = None
@@ -419,9 +592,13 @@ if __name__ == '__main__':
         else:
             assert False, "Not permitted by argparse parameters"
 
+    spectrograms, *_ = next(iter(loader))
+    in_channel = spectrograms[0].shape[0]
+
     vqvae_parameters = {'in_channel': in_channel,
                         'groups': args.groups,
                         'num_embeddings': args.num_embeddings,
+                        'embed_dim': args.embeddings_dimension,
                         'num_hidden_channels': args.num_hidden_channels,
                         'num_residual_channels': args.num_residual_channels,
                         'corruption_weights': corruption_weights,
@@ -433,30 +610,124 @@ if __name__ == '__main__':
                             spectrograms_helper.safelog_eps
                             if args.output_spectrogram_threshold else None),
                         'use_local_kernels': args.use_local_kernels,
+                        'disable_quantization': args.disable_quantization
                         }
 
-    def print_resolution_summary(loader, resolution_factors):
-        sample = next(iter(loader))[0][0]
-        print(f"Input images shape: {sample.shape}")
+    def get_resolution_summary(self, resolution_factors,
+                               verbose: bool = True):
+        maybe_print = print if verbose else lambda x: None
 
-        num_channels, height, width = sample.shape
+        spectrograms, *_ = next(iter(loader))
+        shapes = {}
+        shapes['input'] = spectrograms.shape[-2:]
+        maybe_print(f"Input images shape: {spectrograms.shape}")
+
+        batch_size, num_channels, input_height, input_width = (
+            spectrograms.shape)
         total_resolution_factor = 1
-        for layer_name, resolution_factor in resolution_factors.items():
-            total_resolution_factor *= resolution_factor
-            print(f"Layer {layer_name}: ")
-            print(f"\nAdditional downsampling factor {resolution_factor}")
-            C, H, W = sample.shape
-            layer_height = height // total_resolution_factor
-            layer_width = width // total_resolution_factor
-            print(f"\nResolution H={layer_height}, W={layer_width}")
+        for layer_name in ['bottom', 'top']:
+            resolution_factor = resolution_factors[layer_name]
 
-    print_resolution_summary(loader, args.resolution_factors)
+            maybe_print(layer_name + "layer:")
+            maybe_print("\tEncoder downsampling factor:",
+                        resolution_factor)
+            total_resolution_factor *= resolution_factor
+            maybe_print("\tResulting total downsampling factor:",
+                        total_resolution_factor)
+            layer_height = input_height // total_resolution_factor
+            layer_width = input_width // total_resolution_factor
+            shapes[layer_name] = (layer_height, layer_width)
+            maybe_print(f"\nResolution H={layer_height}, W={layer_width}")
+        return shapes
+
+    resolution_summary = get_resolution_summary(
+        loader, args.resolution_factors, verbose=True)
+
+    decoders: Optional[Mapping[str, nn.Module]] = None
+    encoders: Optional[Mapping[str, nn.Module]] = None
+    if args.test_resnet:
+        import fastai
+        import math
+
+        # common parameters for both encoders
+        encoders_kwargs = dict(
+            ndim=2,
+            stride=2
+        )
+
+        # default block for ResNets
+        block = fastai.layers.ResBlock
+        # each ResNet layer downsamples by 2
+        num_layers_b = bottom_downsampling = (
+            int(math.log2(args.resolution_factors['bottom'])))
+        encoder_b = NoFlattenXResNet(
+            block, 1, [4] * (num_layers_b),
+            c_in=in_channel,
+            n_out=args.num_hidden_channels,
+            **encoders_kwargs)
+
+        num_layers_t = top_downsampling = (
+            int(math.log2(args.resolution_factors['top'])))
+        encoder_t = NoFlattenXResNet(block,
+                                     1,
+                                     [4] * num_layers_t,
+                                     c_in=args.num_hidden_channels,
+                                     n_out=args.num_hidden_channels,
+                                     **encoders_kwargs)
+
+        encoders = {'top': encoder_t,
+                    'bottom': encoder_b}
+
+        # common parameters for both decoders
+        decoders_kwargs = dict(
+            # only return the upsampling-decoder half of the U-Net
+            include_encoder=False,
+            include_middle_conv=False
+        )
+
+        decoder_t = NoSkipDynamicUnet(
+            nn.Sequential(*list(encoder_t.children()),
+                          nn.Conv2d(
+                              args.num_hidden_channels,
+                              args.embeddings_dimension,
+                              1,
+                              stride=1)
+                          ),
+            args.embeddings_dimension,
+            resolution_summary['bottom'],
+            **decoders_kwargs)
+        decoder_b = NoSkipDynamicUnet(
+            nn.Sequential(*list(encoder_b.children()),
+                          nn.Conv2d(
+                              args.num_hidden_channels,
+                              2 * args.embeddings_dimension,
+                              1,
+                              stride=1)
+                          ),
+            in_channel,
+            resolution_summary['input'],
+            **decoders_kwargs)
+        decoders = {'top': decoder_t,
+                    'bottom': decoder_b}
 
     vqvae = VQVAE(normalizer_statistics=normalizer_statistics,
+                  encoders=encoders,
+                  decoders=decoders,
+                  adapt_quantized_durations=False,
                   **vqvae_parameters
                   )
 
     model = vqvae.to(device)
+
+    reconstruction_criterion = get_reconstruction_criterion(
+        args.reconstruction_criterion, spectrograms_helper)
+
+    reconstruction_metric_names = ['MSE', 'DDSP', 'Jukebox']
+    reconstruction_metrics = {
+        metric_name: get_reconstruction_criterion(
+            metric_name,
+            spectrograms_helper).to(device)
+        for metric_name in reconstruction_metric_names}
 
     start_epoch = 0
     if args.resume_training_from is not None:
@@ -501,8 +772,21 @@ if __name__ == '__main__':
         tensorboard_writer = SummaryWriter(tensorboard_dir_path)
 
     print("Starting training")
+    if tensorboard_writer is not None and validation_loader is not None:
+        # print initial samples, prior to training
+        add_audio_and_image_samples_tensorboard(
+            model, validation_loader,
+            tensorboard_writer,
+            args.num_validation_samples_audio_tensorboard,
+            spectrograms_helper,
+            start_epoch-1,
+            'VALIDATION',
+            device)
+
     for epoch_index in range(start_epoch, args.num_training_epochs):
-        train(epoch_index, loader, model, optimizer, scheduler, device,
+        train(epoch_index, loader, model, reconstruction_criterion,
+              optimizer, scheduler, device,
+              reconstruction_metrics,
               run_id=run_ID,
               latent_loss_weight=args.latent_loss_weight,
               enable_image_dumps=args.enable_image_dumps,
@@ -524,73 +808,61 @@ if __name__ == '__main__':
                         CHECKPOINTS_DIR_PATH / checkpoint_filename
                 )
 
-        if validation_loader is not None:
+        if tensorboard_writer is not None:
+            add_audio_and_image_samples_tensorboard(
+                model, loader,
+                tensorboard_writer,
+                args.num_validation_samples_audio_tensorboard,
+                spectrograms_helper,
+                epoch_index,
+                'TRAINING',
+                device)
+
+        if (validation_loader is not None
+                and epoch_index % args.validation_frequency == 0):
             # eval on validation set
             with torch.no_grad():
-                (mse_validation, latent_loss_validation,
-                 perplexity_t_validation, perplexity_b_validation) = evaluate(
-                    validation_loader, model,
-                    device, dry_run=args.dry_run,
+                (reconstruction_loss_validation, latent_loss_validation,
+                 perplexity_t_validation, perplexity_b_validation,
+                 reconstruction_metrics_validation) = evaluate(
+                    validation_loader, model, reconstruction_criterion,
+                    device,
+                    reconstruction_metrics,
+                    dry_run=args.dry_run,
                     latent_loss_weight=args.latent_loss_weight)
 
                 if tensorboard_writer is not None and not (
                         args.dry_run or args.disable_writes_to_disk):
-                    tensorboard_writer.add_scalar('validation/reconstruction_mse',
-                                                  mse_validation,
-                                                  global_step=epoch_index)
-                    tensorboard_writer.add_scalar('validation/latent_loss',
-                                                  latent_loss_validation,
-                                                  global_step=epoch_index)
-                    tensorboard_writer.add_scalar('validation/perplexity_top',
-                                                  perplexity_t_validation,
-                                                  global_step=epoch_index)
-                    tensorboard_writer.add_scalar('validation/perplexity_bottom',
-                                                  perplexity_b_validation,
-                                                  global_step=epoch_index)
+                    write_vqvae_scalars_to_tensorboard(
+                        tensorboard_writer,
+                        'vqvae-validation',
+                        epoch_index,
+                        model,
+                        args.latent_loss_weight,
+                        args.reconstruction_criterion,
+                        reconstruction_loss_validation,
+                        latent_loss_validation,
+                        perplexity_t_validation,
+                        perplexity_b_validation
+                        )
 
-                    # if i+1 % tensorboard_audio_interval_epochs == 0:
+                    for metric_name, metric_value in (
+                            reconstruction_metrics_validation.items()):
+                        tensorboard_writer.add_scalar(
+                            'vqvae-validation-metrics/' + metric_name,
+                            metric_value,
+                            global_step=epoch_index
+                        )
 
-                    # add audio summaries to Tensorboard
-                    model.eval()
-                    validation_samples, *_ = next(iter(validation_loader))
-                    reconstructions, *_ = (vqvae.forward(validation_samples.to(
-                        device)))
-
-                    validation_samples = validation_samples[
-                        :args.num_validation_samples_audio_tensorboard]
-                    reconstructions = reconstructions[
-                        :args.num_validation_samples_audio_tensorboard]
-
-                    validation_samples_audio = spectrograms_helper.to_audio(
-                        validation_samples)
-                    reconstructions_audio = spectrograms_helper.to_audio(
-                        reconstructions)
-                    tensorboard_writer.add_audio(
-                        'Original (end of epoch, validation data)',
-                        validation_samples_audio.flatten(),
-                        epoch_index)
-                    tensorboard_writer.add_audio(
-                        'Reconstructions (end of epoch, validation data)',
-                        reconstructions_audio.flatten(),
-                        epoch_index)
-
-                    # add spectrogram plots to Tensorboards
-                    mel_specs_original, mel_IFs_original = (
-                        np.swapaxes(validation_samples.data.cpu().numpy(), 0, 1))
-                    mel_specs_reconstructions, mel_IFs_reconstructions = (
-                        np.swapaxes(reconstructions.data.cpu().numpy(), 0, 1))
-                    mel_specs = np.concatenate([mel_specs_original,
-                                                mel_specs_reconstructions],
-                                               axis=0)
-                    mel_IFs = np.concatenate([mel_IFs_original,
-                                              mel_IFs_reconstructions], axis=0)
-
-                    spec_figure, _ = gansynthplots.plot_mel_representations_batch(
-                        log_melspecs=mel_specs, mel_IFs=mel_IFs,
-                        hop_length=spectrograms_helper.hop_length,
-                        fs_hz=spectrograms_helper.fs_hz)
-                    tensorboard_writer.add_figure('Originals + Reconstructions (mel-scale, logspec/IF, validation data)',
-                                                  spec_figure,
-                                                  epoch_index)
+                    # if (epoch_index+1 % args.tensorboard_audio_interval_epochs
+                    #         == 0):
+                    add_audio_and_image_samples_tensorboard(
+                        model, validation_loader,
+                        tensorboard_writer,
+                        args.num_validation_samples_audio_tensorboard,
+                        spectrograms_helper,
+                        epoch_index,
+                        'VALIDATION',
+                        device)
 
                     tensorboard_writer.flush()
