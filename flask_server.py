@@ -1,9 +1,10 @@
-from vqvae import VQVAE
-from transformer import (SelfAttentiveVQTransformer, UpsamplingVQTransformer,
-                         VQNSynthTransformer)
+from vqvae.vqvae import VQVAE
+from priors.transformer import (SelfAttentiveVQTransformer,
+                                UpsamplingVQTransformer,
+                                VQNSynthTransformer)
 from sample import (sample_model, make_conditioning_tensors,
                     ConditioningMap, make_conditioning_map)
-from dataset import LMDBDataset
+from utils.datasets.lmdb_dataset import LMDBDataset
 from GANsynth_pytorch.spectrograms_helper import SpectrogramsHelper
 from utils.misc import expand_path, get_spectrograms_helper
 
@@ -234,8 +235,8 @@ def init_app(vqvae_model_parameters_path: pathlib.Path,
     with open(VQVAE_TRAINING_PARAMETERS_PATH, 'r') as f:
         vqvae_training_parameters = json.load(f)
     spectrograms_helper = get_spectrograms_helper(
-        device=device, **vqvae_training_parameters)
-    spectrograms_helper.to(device)
+        device=DEVICE, **vqvae_training_parameters)
+    spectrograms_helper.to(DEVICE)
 
     global transformer_top
     print("Load top-layer Transformer")
