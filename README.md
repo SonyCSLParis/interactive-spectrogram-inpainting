@@ -1,38 +1,20 @@
-# vq-vae-2-pytorch
-Implementation of Generating Diverse High-Fidelity Images with VQ-VAE-2 in PyTorch.
+# Interactive Generation of Instrument Sounds by Spectrogram Inpainting 
 
-Originally forked from https://github.com/rosinality/vq-vae-2-pytorch.
+Code accompanying the paper published at the 2020 Joint Conference on AI Music Creativity.
+
+Joint work from Théis Bazin, Gaëtan Hadjeres, Philippe Esling and Mikhail Malt.
 
 ## Requisite
 
-* Python >= 3.6
-* PyTorch >= 1.1
+* Python >= 3.7
+* PyTorch >= 1.6
+* torchaudio >= 0.6
 * lmdb (for storing extracted codes)
 
 ## Usage
 
-Currently supports 256px (top/bottom hierarchical prior)
+Coming soon.
 
-1. Stage 1 (VQ-VAE)
+## Acknowledgments
 
-> python train_vqvae.py [DATASET PATH]
-
-If you use FFHQ, I highly recommends to preprocess images. (resize and convert to jpeg)
-
-2. Extract codes for stage 2 training
-
-> python extract_code.py --ckpt checkpoint/[VQ-VAE CHECKPOINT] --name [LMDB NAME] [DATASET PATH]
-
-3. Stage 2 (PixelSNAIL)
-
-> python train_pixelsnail.py [LMDB NAME]
-
-Maybe it is better to use larger PixelSNAIL model. Currently model size is reduced due to GPU constraints.
-
-## Sample
-
-### Stage 1
-
-Note: This is a training sample
-
-![Sample from Stage 1 (VQ-VAE)](stage1_sample.png)
+This work was supported by the CIFRE contract number 2019.009 of the [ANRT](http://www.anrt.asso.fr/fr)
