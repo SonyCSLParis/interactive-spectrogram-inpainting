@@ -1,0 +1,11 @@
+theme: jekyll-theme-cayman
+title: Spectrogram Inpainting for Interactive Generation of Instrument Sounds
+description: "This is the companion website for the eponymous anonymous submission"
+github: [metadata]
+
+markdown: kramdown
+kramdown:
+    math_engine: katex
+
+plugins:
+    - jemoji

@@ -1,0 +1,114 @@
+---
+---
+
+@import "{{ site.theme }}";
+
+body {
+    text-align: justify;
+    overflow-x: hidden;
+}
+
+.tableFixHead {
+    overflow-y: auto;
+    max-height: 70vh;
+    border-collapse: separate;
+    & thead th {
+        position: sticky;
+        top: 0;
+        z-index: 7;
+    }
+    background: rgb(253, 253, 253);
+}
+
+.tableFixFirstColumn {
+    overflow-x: auto;
+    height: fit-content;
+    & tbody th, & thead th:first-of-type {
+        position: sticky; left: 0;
+        border-left: none !important;
+    }
+
+    & tbody th {
+        z-index: 5;
+    }
+
+    & thead th:first-of-type {
+        z-index: 10;
+    }
+    background: rgb(253, 253, 253);
+}
+
+// applies to every second row of the table
+// FIXME: seems to be incompatible with border-collapse: separate
+.tableDoubleRows tr, .tableDoubleRows td {
+    border-style: dotted;
+    border-width: 2px;
+    border-bottom-width: medium;
+    border-color: inherit;
+}
+
+.tableDoubleRows tr:nth-of-type(2n) {
+    background-color: #ffffd9;
+}
+
+th, td {
+    text-align: center;
+
+    & img {
+        margin: auto;
+        min-width: 100px;
+
+        @media screen and (max-width: 42em) {
+            max-height: 15vh;
+        }
+    }
+}
+th {
+    background:#eee;
+    z-index: 1;
+}
+
+.center-table {
+    margin: auto;
+    width: max-content !important;
+}
+
+.main-content table td {
+    padding: 0.5rem 1rem;
+    border: 1px solid #e9ebec;
+}
+
+.main-content table th {
+    padding: 0.5rem 1rem;
+    border: 1px solid #e9ebec;
+}
+
+.highlight {
+    z-index: -1;
+    background: rgb(186, 219, 230);
+
+    &.wrong {
+        background: rgb(252, 155, 179);
+    }
+}
+
+audio {
+    z-index: 0;
+    width: 130px;
+}
+
+.main-content > audio {
+    width: 33.3%;
+    margin-left: 33.3%;
+}
+
+.main-content > video {
+    width: 100%;
+}
+
+.full-size {
+    @media screen and (min-width: 64em) {
+        width: 80vw !important;
+        margin-left: calc(-40vw + 50%);
+    }
+}
