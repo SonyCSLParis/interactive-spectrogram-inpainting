@@ -1,1 +1,1 @@
-The accompanying website is available [here](https://anonymous0505.github.io/vector-quantized-inpainting/).
+This branch holds the sources for the companion website, available [here](https://sonycslparis.github.io/interactive-spectrogram-inpainting/).
