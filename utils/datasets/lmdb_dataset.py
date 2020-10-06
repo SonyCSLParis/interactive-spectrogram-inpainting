@@ -1,6 +1,3 @@
-# TODO(theis): DELETE THIS from project root!!!!
-# only copied here to make previous pickled datasets load...
-
 from typing import Iterable, Mapping, Optional, Sequence
 import os
 import pickle
