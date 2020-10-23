@@ -86,7 +86,7 @@ def full_frame(width=None, height=None):
     mpl.rcParams['savefig.pad_inches'] = 0
     figsize = None if width is None else (width, height)
     fig = plt.figure(figsize=figsize)
-    ax = plt.axes([0, 0, 1, 1], frameon=False)
+    ax = plt.axes((0, 0, 1, 1), frameon=False)
     ax.get_xaxis().set_visible(False)
     ax.get_yaxis().set_visible(False)
     plt.autoscale(tight=True)
@@ -135,7 +135,7 @@ def make_spectrogram_image(spectrogram: torch.Tensor,
                 pad_inches=0, bbox_inches=0)
     fig.clear()
     plt.close()
-    return output_path
+    return pathlib.Path(output_path)
 
 
 @torch.no_grad()
@@ -623,9 +623,11 @@ def timerange_change():
     assert partial_sample_model is not None
 
     layer = str(request.args.get('layer'))
-    temperature = float(request.args.get('temperature'))
-    start_index_top = int(request.args.get('start_index_top'))
-    uniform_sampling = bool(strtobool(request.args.get('uniform_sampling')))
+    temperature = request.args.get('temperature', type=float)
+    start_index_top = request.args.get('start_index_top', type=int)
+    uniform_sampling = bool(strtobool(
+        request.args.get('uniform_sampling', type=str,
+                         default="False")))
 
     # try to retrieve local conditioning map in the request's JSON payload
     (class_conditioning_top_map, class_conditioning_bottom_map,
@@ -634,7 +636,7 @@ def timerange_change():
     )
     global_instrument_family_str = str(
         request.args.get('instrument_family_str'))
-    global_pitch = int(request.args.get('pitch'))
+    global_pitch = request.args.get('pitch', type=int)
     global_class_conditioning = {
         'pitch': global_pitch,
         'instrument_family_str': global_instrument_family_str
