@@ -32,6 +32,9 @@ class BiasedNonLinearity(nn.Module):
 
 
 class VQVAE(nn.Module):
+    n_embed_t: int
+    n_embed_b: int
+
     """Implementation of the VQ-VAE model
 
     Arguments:
@@ -132,12 +135,13 @@ class VQVAE(nn.Module):
         else:
             self.enc_t = encoders['top']
             self.enc_b = encoders['bottom']
-        try:
-            self.n_embed_t, self.n_embed_b = self.num_embeddings
-        except TypeError:
-            # provided `num_embeddings` is no tuple, assumed to be a single int
-            # use this same value for both code layers
+
+        if isinstance(self.num_embeddings, int):
+            # use single value for both code layers
             self.n_embed_t, self.n_embed_b = [self.num_embeddings] * 2
+        else:
+            self.n_embed_t, self.n_embed_b = self.num_embeddings
+
         self.quantize_conv_t = nn.Conv2d(self.num_hidden_channels,
                                          self.embed_dim, 1)
 
@@ -213,6 +217,7 @@ class VQVAE(nn.Module):
             self.data_normalizer = None
 
         if self.output_activation_type == 'threshold_gelu':
+            assert self.output_spectrogram_min_magnitude is not None
             self.output_activation = BiasedNonLinearity(
                 nn.GELU(), self.output_spectrogram_min_magnitude,
                 channel_index=0
@@ -229,15 +234,15 @@ class VQVAE(nn.Module):
         self.adapt_quantized_durations = adapt_quantized_durations
 
     def forward(self, input):
-        quant_t, quant_b, diff, id_t, id_b, perplexity_t, perplexity_b = self.encode(
-            input)
+        (quant_t, quant_b, diff, id_t, id_b,
+         perplexity_t, perplexity_b) = self.encode(input)
         dec = self.decode(quant_t, quant_b)
         return dec, diff, perplexity_t, perplexity_b, id_t, id_b
 
     def encode(self, input: Tensor) -> Tuple[
             FloatTensor, FloatTensor, FloatTensor,
             LongTensor, LongTensor, FloatTensor, FloatTensor]:
-        if self.use_gansynth_normalization:
+        if self.data_normalizer is not None:
             input = self.data_normalizer.normalize(input)
 
         enc_b = self.enc_b(input)
@@ -263,7 +268,7 @@ class VQVAE(nn.Module):
         return (quant_t, quant_b, diff_t + diff_b, id_t, id_b,
                 perplexity_t, perplexity_b)
 
-    def decode(self, quant_t, quant_b):
+    def decode(self, quant_t: Tensor, quant_b: Tensor):
         upsample_top_to_bottom = self.upsample_top_to_bottom(quant_t)
         quant = torch.cat([upsample_top_to_bottom, quant_b], 1)
         dec = self.dec(quant)
@@ -271,7 +276,7 @@ class VQVAE(nn.Module):
         dec = self.post_process(dec)
         return dec
 
-    def decode_code(self, code_t, code_b):
+    def decode_code(self, code_t: LongTensor, code_b: LongTensor):
         quant_t = self.quantize_t.embed_code(code_t)
         quant_t = quant_t.permute(0, 3, 1, 2)
         quant_b = self.quantize_b.embed_code(code_b)
@@ -280,7 +285,7 @@ class VQVAE(nn.Module):
         dec = self.decode(quant_t, quant_b)
         return dec
 
-    def post_process(self, dec: torch.Tensor) -> torch.Tensor:
+    def post_process(self, dec: Tensor) -> Tensor:
         if self.use_gansynth_normalization:
             dec = self.data_normalizer.denormalize(dec)
         if self.output_transform is not None:
