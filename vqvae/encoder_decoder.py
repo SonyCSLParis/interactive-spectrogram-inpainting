@@ -1,14 +1,14 @@
-from typing import Optional, Tuple
+from typing import Iterable, Mapping, Optional, Tuple, Union
 
 from torch import Tensor
 from torch import nn
 
 from fastai.vision.models import unet, xresnet
 from fastai.layers import (BatchNorm, ConvLayer, SequentialEx,
-                           PixelShuffle_ICNR, SigmoidRange,
-                           MaxPool, AdaptiveAvgPool)
+                           PixelShuffle_ICNR, SigmoidRange)
 import fastai.layers
 from fastai.torch_core import apply_init, defaults
+from fastai.torch_core import Module as FastAIModule
 from fastai.callback.hook import model_sizes, dummy_eval
 from fastai.vision.models.unet import _get_sz_change_idxs
 
@@ -307,9 +307,12 @@ class NoSkipDynamicUnet(SequentialEx):
 
 class NoFlattenXResNet(xresnet.XResNet):
     @xresnet.delegates(fastai.layers.ResBlock)
-    def __init__(self, block, expansion, layers, p=0.0, c_in=3, n_out=1000,
-                 stem_szs=(32, 32, 64), widen=1.0, sa=False,
-                 act_cls=defaults.activation, ndim=2, ks=3, stride=2,
+    def __init__(self, block, expansion: int, layers: Iterable[int],
+                 p: float = 0.0, c_in: int = 3, n_out: int = 1000,
+                 stem_szs: Iterable[int] = (32, 32, 64),
+                 widen: float = 1.0, sa: bool = False,
+                 act_cls=defaults.activation, ndim: int = 2,
+                 ks: int = 3, stride: int = 2,
                  **kwargs):
         xresnet.store_attr('block,expansion,act_cls,ndim,ks')
         if ks % 2 == 0:
@@ -334,3 +337,89 @@ class NoFlattenXResNet(xresnet.XResNet):
                       act_cls=act_cls, ndim=ndim),
         )
         xresnet.init_cnn(self)
+
+
+def get_xresnet_unet(in_channels: int,
+                     image_size: Tuple[int, int],  # channels-first
+                     downsampling_factors: Mapping[str, int],
+                     hidden_channels: int,
+                     embeddings_dimension: int,
+                     layers_per_downsampling_block: Union[int, Mapping[str, int]],
+                     expansion: int,
+                     block: Union[nn.Module, FastAIModule] = fastai.layers.ResBlock,
+                     ):
+    """Return a U-Net-like XResNet-based encoder/decoder pair for use in a VQ-VAE
+
+    Arguments:
+        * in_channels (int): number of channels in the input images
+        * image_size (Tuple[int, int]): input images shape, in (H, W) format
+        * resolution_factors (Mapping[str, int]): Total downsampling amount
+            per VQ-VAE layer
+        * hidden_channels (int): number of hidden channels throughout the model
+        * layers_per_downsampling_block (int):
+            number of successive residual layers for a full downsampling block
+            of a factor 2
+        * block (torch.nn.Module):
+    """
+    import math
+    # common parameters for both encoders
+    encoders_kwargs = dict(
+        ndim=2,
+        stride=2
+    )
+    # each ResNet layers of  downsamples by 2
+    num_blocks_b = int(math.log2(downsampling_factors['bottom']))
+    encoder_b = NoFlattenXResNet(
+        block,
+        expansion,
+        [layers_per_downsampling_block] * (num_blocks_b),
+        c_in=in_channels,
+        n_out=hidden_channels,
+        **encoders_kwargs)
+
+    num_blocks_t = int(math.log2(downsampling_factors['top']))
+    encoder_t = NoFlattenXResNet(
+        block,
+        expansion,
+        [layers_per_downsampling_block] * num_blocks_t,
+        c_in=hidden_channels,
+        n_out=hidden_channels,
+        **encoders_kwargs)
+
+    encoders = {'top': encoder_t,
+                'bottom': encoder_b}
+
+    # common parameters for both decoders
+    decoders_kwargs = dict(
+        # only return the upsampling-decoder half of the U-Net
+        include_encoder=False,
+        include_middle_conv=False
+    )
+
+    bottom_resolution = [n // downsampling_factors['bottom']
+                         for n in image_size]
+    decoder_t = NoSkipDynamicUnet(
+        nn.Sequential(*list(encoder_t.children()),
+                      nn.Conv2d(
+                          hidden_channels,
+                          embeddings_dimension,
+                          1,
+                          stride=1)
+                      ),
+        embeddings_dimension,
+        bottom_resolution,
+        **decoders_kwargs)
+    decoder_b = NoSkipDynamicUnet(
+        nn.Sequential(*list(encoder_b.children()),
+                      nn.Conv2d(
+                          hidden_channels,
+                          2 * embeddings_dimension,
+                          1,
+                          stride=1)
+                      ),
+        in_channels,
+        image_size,
+        **decoders_kwargs)
+    decoders = {'top': decoder_t,
+                'bottom': decoder_b}
+    return encoders, decoders
