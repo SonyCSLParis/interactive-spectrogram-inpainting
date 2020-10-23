@@ -1,3 +1,4 @@
+import functools
 from typing import Optional, Iterable, Union, List, Mapping, Tuple
 import numpy as np
 import pathlib
@@ -12,7 +13,8 @@ from GANsynth_pytorch.normalizer import (DataNormalizer,
                                          DataNormalizerStatistics)
 
 from .encoder_decoder import RosinalityEncoder, RosinalityDecoder
-from .bottleneck import QuantizedBottleneck, UnquantizedBottleneck
+from .bottleneck import (QuantizedBottleneck, QuantizedBottleneckWithRestarts,
+                         UnquantizedBottleneck)
 
 
 class BiasedNonLinearity(nn.Module):
@@ -87,7 +89,8 @@ class VQVAE(nn.Module):
         corruption_weights: Mapping[str, Optional[List[float]]] = {'top': None,
                                                                    'bottom': None},
         adapt_quantized_durations: bool = True,
-        disable_quantization: bool = False
+        disable_quantization: bool = False,
+        restarts_usage_threshold: float = 1.
     ):
         if decoder_output_activation is not None:
             raise NotImplementedError("TODO")
@@ -109,6 +112,7 @@ class VQVAE(nn.Module):
         self.corruption_weights = corruption_weights
         self.output_spectrogram_min_magnitude = (
             output_spectrogram_min_magnitude)
+        self.restarts_usage_threshold = restarts_usage_threshold
 
         if isinstance(normalizer_statistics, DataNormalizerStatistics):
             self.normalizer_statistics = normalizer_statistics.__dict__
@@ -146,7 +150,12 @@ class VQVAE(nn.Module):
                                          self.embed_dim, 1)
 
         if not disable_quantization:
-            bottleneck = QuantizedBottleneck
+            if self.restarts_usage_threshold == 1.:
+                bottleneck = QuantizedBottleneck
+            else:
+                bottleneck = functools.partial(
+                    QuantizedBottleneckWithRestarts,
+                    restart_threshold=self.restarts_usage_threshold)
         else:
             bottleneck = UnquantizedBottleneck
 

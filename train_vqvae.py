@@ -4,17 +4,20 @@ import uuid
 import argparse
 import pathlib
 import json
+from fastai.layers import ResBlock
 from tqdm import tqdm
 import numpy as np
 import os
 
 import torch
 from torch import nn, optim
+import torch.distributed as dist
 from torch.optim.optimizer import Optimizer
-from torch.utils.data import DataLoader
-import torchvision
-from torch.utils.tensorboard.writer import SummaryWriter
+from torch.utils.data import DataLoader, Dataset, DistributedSampler
+from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.nn.modules.loss import _Loss as Loss
+from torch.utils.tensorboard.writer import SummaryWriter
+import torchvision
 
 from pytorch_nsynth import NSynth
 from GANsynth_pytorch.spectrograms_helper import (SpectrogramsHelper,
@@ -26,7 +29,7 @@ import GANsynth_pytorch.utils.plots as gansynthplots
 from GANsynth_pytorch.spec_ops import _MEL_BREAK_FREQUENCY_HERTZ
 
 from vqvae.vqvae import VQVAE
-from vqvae.encoder_decoder import NoFlattenXResNet, NoSkipDynamicUnet
+from vqvae.encoder_decoder import get_xresnet_unet
 from utils.losses.spectral import (
     JukeboxMultiscaleSpectralLoss_fromSpectrogram,
     DDSPMultiscaleSpectralLoss_fromSpectrogram)
@@ -43,6 +46,14 @@ DIRPATH = os.path.dirname(os.path.abspath(__file__))
 HOP_LENGTH = 512
 N_FFT = 2048
 FS_HZ = 16000
+
+
+def is_distributed() -> bool:
+    return torch.distributed.is_initialized()
+
+
+def is_master_process() -> bool:
+    return not is_distributed() or torch.distributed.get_rank() == 0
 
 
 def get_spectrograms_helper(args) -> SpectrogramsHelper:
@@ -91,7 +102,7 @@ def write_vqvae_scalars_to_tensorboard(
         global_step: int,
         model: VQVAE,
         latent_loss_weight: float,
-        reconstruction_criterion_name: float,
+        reconstruction_criterion_name: str,
         reconstruction_loss: float,
         latent_loss: float,
         codes_perplexity_top: float,
@@ -132,11 +143,11 @@ def train(epoch: int, loader: DataLoader, model: VQVAE,
           tensorboard_audio_interval_epochs: int = 5,
           tensorboard_num_audio_samples: int = 10,
           dry_run: bool = False,
-          clip_grad_norm: Optional[float] = None
+          clip_grad_norm: Optional[float] = None,
+          train_logs_frequency_batches: int = 1,
           ) -> None:
     num_samples_in_dataset = len(loader.dataset)
 
-    parallel_model = nn.DataParallel(model).to(device)
     reconstruction_criterion.to(device)
 
     tqdm_loader = tqdm(loader, position=1)
@@ -151,21 +162,21 @@ def train(epoch: int, loader: DataLoader, model: VQVAE,
     num_samples_seen_epoch = 0
     num_samples_seen_total = epoch * num_samples_in_dataset
 
-    parallel_model.train()
-    for i, (img, *_) in enumerate(tqdm_loader):
-        parallel_model.zero_grad()
+    model.train()
+    for batch_index, (img, *_) in enumerate(tqdm_loader):
+        model.zero_grad()
 
         img = img.to(device)
 
         out, latent_loss, perplexity_t_mean, perplexity_b_mean, *_ = (
-            parallel_model(img))
+            model(img))
         reconstruction_loss = reconstruction_criterion(out, img)
         latent_loss = latent_loss.mean()
         loss = reconstruction_loss + latent_loss_weight * latent_loss
         loss.backward()
 
         if clip_grad_norm is not None:
-            nn.utils.clip_grad_norm_(parallel_model.parameters(),
+            nn.utils.clip_grad_norm_(model.parameters(),
                                      clip_grad_norm)
 
         optimizer.step()
@@ -212,13 +223,14 @@ def train(epoch: int, loader: DataLoader, model: VQVAE,
 
             num_samples_seen_total += batch_size
 
-        if tensorboard_writer is not None:
+        if (tensorboard_writer is not None
+                and batch_index % train_logs_frequency_batches == 0):
             # add scalar summaries
             write_vqvae_scalars_to_tensorboard(
                 tensorboard_writer,
                 'vqvae-training',
                 num_samples_seen_total,
-                model,
+                model.module,
                 latent_loss_weight,
                 type(reconstruction_criterion).__name__,
                 reconstruction_loss_batch,
@@ -235,8 +247,8 @@ def train(epoch: int, loader: DataLoader, model: VQVAE,
                         num_samples_seen_total
                     )
 
-        if enable_image_dumps and i % 100 == 0:
-            parallel_model.eval()
+        if enable_image_dumps and batch_index % 100 == 0:
+            model.eval()
 
             sample = img[:image_dump_sample_size]
             sample_out = out[:image_dump_sample_size]
@@ -252,14 +264,14 @@ def train(epoch: int, loader: DataLoader, model: VQVAE,
                     torch.cat([sample_channel, out_channel,
                                (sample_channel-out_channel).abs()], 0),
                     os.path.join(DIRPATH, f'samples/{run_ID}/',
-                                 f'{str(epoch + 1).zfill(5)}_{str(i).zfill(5)}_{channel_name}.png'),
+                                 f'{str(epoch + 1).zfill(5)}_{str(batch_index).zfill(5)}_{channel_name}.png'),
                     nrow=image_dump_sample_size,
                     # normalize=True,
                     # range=(-1, 1),
                     # scale_each=True,
                 )
 
-            parallel_model.train()
+            model.train()
 
         if dry_run:
             break
@@ -276,64 +288,61 @@ def evaluate(loader: DataLoader, model: nn.Module,
              latent_loss_weight: float = 0.25,
              dry_run: bool = False):
     """Evaluate model and return metrics averaged over a validation/test set"""
-    with torch.no_grad():
-        loader = tqdm(loader, desc='validation')
+    loader = tqdm(loader, desc='validation')
 
-        parallel_model = nn.DataParallel(model)
+    reconstruction_criterion.to(device)
 
-        reconstruction_criterion.to(device)
+    reconstruction_loss_total = torch.zeros(1).to(device)
+    num_samples_seen = 0
+    perplexity_t_total = torch.zeros(1).to(device)
+    perplexity_b_total = torch.zeros(1).to(device)
+    latent_loss_total = torch.zeros(1).to(device)
+    reconstruction_metrics_total = {
+        metric_name: torch.zeros(1).to(device)
+        for metric_name in reconstruction_metrics.keys()
+    }
 
-        reconstruction_loss_total = torch.zeros(1).to(device)
-        num_samples_seen = 0
-        perplexity_t_total = torch.zeros(1).to(device)
-        perplexity_b_total = torch.zeros(1).to(device)
-        latent_loss_total = torch.zeros(1).to(device)
-        reconstruction_metrics_total = {
-            metric_name: torch.zeros(1).to(device)
-            for metric_name in reconstruction_metrics.keys()
-        }
+    model.eval()
+    for i, (img, *_) in enumerate(loader):
+        batch_size = img.shape[0]
+        img = img.to(device)
 
-        parallel_model.eval()
-        for i, (img, *_) in enumerate(loader):
-            batch_size = img.shape[0]
-            img = img.to(device)
+        out, latent_loss, perplexity_t_mean, perplexity_b_mean, *_ = (
+            model(img))
+        reconstruction_loss_batch = reconstruction_criterion(out, img)
 
-            out, latent_loss, perplexity_t_mean, perplexity_b_mean, *_ = (
-                parallel_model(img))
-            reconstruction_loss_batch = reconstruction_criterion(out, img)
+        reconstruction_loss_total += reconstruction_loss_batch * batch_size
+        perplexity_t_total += perplexity_t_mean.mean() * batch_size
+        perplexity_b_total += perplexity_b_mean.mean() * batch_size
+        latent_loss_total += latent_loss.sum()
 
-            reconstruction_loss_total += reconstruction_loss_batch * batch_size
-            perplexity_t_total += perplexity_t_mean.mean() * batch_size
-            perplexity_b_total += perplexity_b_mean.mean() * batch_size
-            latent_loss_total += latent_loss.sum()
+        for metric_name, metric in reconstruction_metrics.items():
+            metric_batch = metric(img, out).item()
+            reconstruction_metrics_total[metric_name] += (
+                metric_batch * batch_size)
 
-            for metric_name, metric in reconstruction_metrics.items():
-                metric_batch = metric(img, out).item()
-                reconstruction_metrics_total[metric_name] += (
-                    metric_batch * batch_size)
+        num_samples_seen += batch_size
 
-            num_samples_seen += batch_size
+        if dry_run:
+            break
 
-            if dry_run:
-                break
+    reconstruction_loss_average = (
+        reconstruction_loss_total.item() / num_samples_seen)
+    latent_loss_average = latent_loss_total.item() / num_samples_seen
+    perplexity_t_average = (perplexity_t_total.item()
+                            / num_samples_seen)
+    perplexity_b_average = (perplexity_b_total.item()
+                            / num_samples_seen)
 
-        reconstruction_loss_average = (
-            reconstruction_loss_total.item() / num_samples_seen)
-        latent_loss_average = latent_loss_total.item() / num_samples_seen
-        perplexity_t_average = (perplexity_t_total.item()
-                                / num_samples_seen)
-        perplexity_b_average = (perplexity_b_total.item()
-                                / num_samples_seen)
+    reconstruction_metrics_average = {
+        metric_name: metric_total / num_samples_seen
+        for metric_name, metric_total in (
+            reconstruction_metrics_total.items())
+    }
 
-        reconstruction_metrics_average = {
-            metric_name: metric_total / num_samples_seen
-            for metric_name, metric_total in (
-                reconstruction_metrics_total.items())
-        }
-
-        return (reconstruction_loss_average, latent_loss_average,
-                perplexity_t_average, perplexity_b_average,
-                reconstruction_metrics_average)
+    return (reconstruction_loss_average, latent_loss_average,
+            perplexity_t_average, perplexity_b_average,
+            reconstruction_metrics_average)
 
 
 @torch.no_grad()
@@ -345,15 +354,13 @@ def add_audio_and_image_samples_tensorboard(
         epoch_index: int,
         subset_name: str,
         device: str) -> None:
+    print("Dump image and audio samples to Tensorboard")
     # add audio summaries to Tensorboard
     model.eval()
     samples, *_ = next(iter(dataloader))
     samples = samples[:num_samples]
     reconstructions, *_ = (vqvae.forward(samples.to(
         device)))
-
-    samples = samples
-    reconstructions = reconstructions
 
     samples_audio = spectrograms_helper.to_audio(
         samples)
@@ -394,6 +401,14 @@ def add_audio_and_image_samples_tensorboard(
 
 
 if __name__ == '__main__':
+    # These are the parameters used to initialize the process group
+    env_dict = {
+        key: os.environ[key]
+        for key in ("MASTER_ADDR", "MASTER_PORT", "RANK", "WORLD_SIZE")
+    }
+    print(f"[{os.getpid()}] Initializing process group with: {env_dict}")
+    dist.init_process_group(backend="nccl")
+
     class StoreDictKeyPair(argparse.Action):
         def __call__(self, parser, namespace, values, option_string=None):
             my_dict = {}
@@ -419,6 +434,7 @@ if __name__ == '__main__':
     parser.add_argument('--hop_length', type=int, default=512)
     parser.add_argument('--num_embeddings', type=int, default=512)
     parser.add_argument('--disable_quantization', action='store_true')
+    parser.add_argument('--restarts_usage_threshold', type=float, default=1.)
     parser.add_argument('--embeddings_dimension', type=int, default=64)
     parser.add_argument('--num_hidden_channels', type=int, default=128)
     parser.add_argument('--num_residual_channels', type=int, default=32)
@@ -460,6 +476,9 @@ if __name__ == '__main__':
     parser.add_argument('--save_frequency', default=1, type=int,
                         help=('Frequency (in epochs) at which to save'
                               'trained weights'))
+    parser.add_argument('--train_logs_frequency_batches', default=1, type=int,
+                        help=('Frequency (in batches) at which to store training metrics'
+                              'to Tensorboard'))
     parser.add_argument('--enable_image_dumps', action='store_true',
                         help=('Dump png pictures of the spectrograms during training.'
                               'WARNING: Takes up a lot of space!'))
@@ -483,7 +502,16 @@ if __name__ == '__main__':
     parser.add_argument('--num_validation_samples_audio_tensorboard', type=int,
                         default=3, help=("Number of validation audio samples "
                                          "to store in Tensorboard"))
-    parser.add_argument('--test_resnet', action='store_true')
+    parser.add_argument('--use_resnet', action='store_true')
+    parser.add_argument('--resnet_layers_per_downsampling_block', type=int,
+                        default=4)
+    parser.add_argument('--resnet_expansion', type=int, default=1)
+    parser.add_argument(
+        '--local_rank', type=int, default=0,
+        help="This is provided by torch.distributed.launch")
+    parser.add_argument(
+        '--local_world_size', type=int, default=1,
+        help="Number of GPUs per node, required by torch.distributed.launch")
 
     args = parser.parse_args()
 
@@ -491,16 +519,19 @@ if __name__ == '__main__':
                                    or args.precomputed_normalization_statistics
                                    )
 
-    run_ID = ('VQVAE-' +
-              datetime.now().strftime('%Y%m%d-%H%M%S-')
+    run_ID = ('VQVAE-'
+              + datetime.now().strftime('%Y%m%d-%H%M%S-')
               + str(uuid.uuid4())[:6])
 
     print(args)
 
-    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    device = f'cuda:{args.local_rank}' if torch.cuda.is_available() else 'cpu'
 
     def expand_path(path: str) -> pathlib.Path:
         return pathlib.Path(path).expanduser().absolute()
+
+    def maybe_get_sampler(dataset: Dataset) -> Optional[DistributedSampler]:
+        return DistributedSampler(dataset) if is_distributed() else None
 
     audio_directory_paths = [expand_path(path)
                              for path in args.dataset_audio_directory_paths]
@@ -514,7 +545,7 @@ if __name__ == '__main__':
     vqvae_decoder_activation = None
     output_transform = None
 
-    spectrograms_helper = get_spectrograms_helper(args)
+    spectrograms_helper = get_spectrograms_helper(args).to(device)
 
     # converts wavforms to spectrograms on-the-fly on GPU
     dataloader_class: WavToSpectrogramDataLoader
@@ -533,26 +564,45 @@ if __name__ == '__main__':
         audio_directory_paths=audio_directory_paths,
         json_data_path=train_dataset_json_data_path,
         **common_dataset_parameters)
-    loader = dataloader_class(
+
+    train_sampler = maybe_get_sampler(nsynth_dataset)
+    train_loader = dataloader_class(
         dataset=nsynth_dataset,
+        sampler=train_sampler,
         spectrograms_helper=spectrograms_helper,
         batch_size=args.batch_size,
-        num_workers=args.num_workers, shuffle=True,
+        num_workers=args.num_workers,
+        shuffle=(train_sampler is None),
         pin_memory=True)
 
+    validation_sampler: Optional[DistributedSampler] = None
     validation_loader: Optional[WavToSpectrogramDataLoader] = None
+    non_distributed_validation_loader: Optional[WavToSpectrogramDataLoader] = (
+        None)
     if args.validation_dataset_json_data_path:
         nsynth_validation_dataset = NSynth(
             audio_directory_paths=audio_directory_paths,
             json_data_path=validation_dataset_json_data_path,
             **common_dataset_parameters
         )
+        validation_sampler = maybe_get_sampler(nsynth_validation_dataset)
         validation_loader = dataloader_class(
+            dataset=nsynth_validation_dataset,
+            sampler=validation_sampler,
+            spectrograms_helper=spectrograms_helper,
+            batch_size=args.batch_size,
+            num_workers=args.num_workers,
+            shuffle=(validation_sampler is None),
+            pin_memory=True,
+            drop_last=False
+        )
+        non_distributed_validation_loader = dataloader_class(
             dataset=nsynth_validation_dataset,
             spectrograms_helper=spectrograms_helper,
             batch_size=args.batch_size,
             num_workers=args.num_workers,
-            shuffle=True, pin_memory=True,
+            shuffle=True,
+            pin_memory=True,
             drop_last=False
         )
 
@@ -563,15 +613,30 @@ if __name__ == '__main__':
             expand_path(args.precomputed_normalization_statistics))
         normalizer_statistics = data_normalizer.statistics
     elif args.input_normalization:
-        dataloader_for_gansynth_normalization = loader
-        # compute normalization parameters
-        data_normalizer = DataNormalizer(
-            dataloader=dataloader_for_gansynth_normalization)
-        # store normalization parameters
         normalization_statistics_path = (
             train_dataset_json_data_path.parent
             / 'normalization_statistics.json')
-        data_normalizer.dump_statistics(normalization_statistics_path)
+        if is_master_process():
+            dataloader_for_gansynth_normalization = (
+                dataloader_class(
+                    dataset=nsynth_dataset,
+                    spectrograms_helper=spectrograms_helper,
+                    batch_size=args.batch_size,
+                    num_workers=args.num_workers,
+                    shuffle=True,
+                    pin_memory=True,
+                    drop_last=False
+                )
+            )
+            # compute normalization parameters
+            data_normalizer = DataNormalizer(
+                dataloader=dataloader_for_gansynth_normalization)
+            # store normalization parameters
+            data_normalizer.dump_statistics(normalization_statistics_path)
+        dist.barrier()
+
+        data_normalizer = DataNormalizer.load_statistics(
+            normalization_statistics_path)
         normalizer_statistics = data_normalizer.statistics
 
     print("Initializing model")
@@ -592,7 +657,7 @@ if __name__ == '__main__':
         else:
             assert False, "Not permitted by argparse parameters"
 
-    spectrograms, *_ = next(iter(loader))
+    spectrograms, *_ = next(iter(train_loader))
     in_channel = spectrograms[0].shape[0]
 
     vqvae_parameters = {'in_channel': in_channel,
@@ -610,14 +675,15 @@ if __name__ == '__main__':
                             spectrograms_helper.safelog_eps
                             if args.output_spectrogram_threshold else None),
                         'use_local_kernels': args.use_local_kernels,
-                        'disable_quantization': args.disable_quantization
+                        'disable_quantization': args.disable_quantization,
+                        'restarts_usage_threshold': args.restarts_usage_threshold
                         }
 
     def get_resolution_summary(self, resolution_factors,
                                verbose: bool = True):
         maybe_print = print if verbose else lambda x: None
 
-        spectrograms, *_ = next(iter(loader))
+        spectrograms, *_ = next(iter(train_loader))
         shapes = {}
         shapes['input'] = spectrograms.shape[-2:]
         maybe_print(f"Input images shape: {spectrograms.shape}")
@@ -641,74 +707,20 @@ if __name__ == '__main__':
         return shapes
 
     resolution_summary = get_resolution_summary(
-        loader, args.resolution_factors, verbose=True)
+        train_loader, args.resolution_factors, verbose=True)
 
     decoders: Optional[Mapping[str, nn.Module]] = None
     encoders: Optional[Mapping[str, nn.Module]] = None
-    if args.test_resnet:
-        import fastai
-        import math
-
-        # common parameters for both encoders
-        encoders_kwargs = dict(
-            ndim=2,
-            stride=2
-        )
-
-        # default block for ResNets
-        block = fastai.layers.ResBlock
-        # each ResNet layer downsamples by 2
-        num_layers_b = bottom_downsampling = (
-            int(math.log2(args.resolution_factors['bottom'])))
-        encoder_b = NoFlattenXResNet(
-            block, 1, [4] * (num_layers_b),
-            c_in=in_channel,
-            n_out=args.num_hidden_channels,
-            **encoders_kwargs)
-
-        num_layers_t = top_downsampling = (
-            int(math.log2(args.resolution_factors['top'])))
-        encoder_t = NoFlattenXResNet(block,
-                                     1,
-                                     [4] * num_layers_t,
-                                     c_in=args.num_hidden_channels,
-                                     n_out=args.num_hidden_channels,
-                                     **encoders_kwargs)
-
-        encoders = {'top': encoder_t,
-                    'bottom': encoder_b}
-
-        # common parameters for both decoders
-        decoders_kwargs = dict(
-            # only return the upsampling-decoder half of the U-Net
-            include_encoder=False,
-            include_middle_conv=False
-        )
-
-        decoder_t = NoSkipDynamicUnet(
-            nn.Sequential(*list(encoder_t.children()),
-                          nn.Conv2d(
-                              args.num_hidden_channels,
-                              args.embeddings_dimension,
-                              1,
-                              stride=1)
-                          ),
-            args.embeddings_dimension,
-            resolution_summary['bottom'],
-            **decoders_kwargs)
-        decoder_b = NoSkipDynamicUnet(
-            nn.Sequential(*list(encoder_b.children()),
-                          nn.Conv2d(
-                              args.num_hidden_channels,
-                              2 * args.embeddings_dimension,
-                              1,
-                              stride=1)
-                          ),
+    if args.use_resnet:
+        encoders, decoders = get_xresnet_unet(
             in_channel,
-            resolution_summary['input'],
-            **decoders_kwargs)
-        decoders = {'top': decoder_t,
-                    'bottom': decoder_b}
+            resolution_summary['input'],  # channels-first
+            args.resolution_factors,
+            hidden_channels=args.num_hidden_channels,
+            embeddings_dimension=args.embeddings_dimension,
+            layers_per_downsampling_block=args.resnet_layers_per_downsampling_block,
+            expansion=args.resnet_expansion,
+        )
 
     vqvae = VQVAE(normalizer_statistics=normalizer_statistics,
                   encoders=encoders,
@@ -718,6 +730,13 @@ if __name__ == '__main__':
                   )
 
     model = vqvae.to(device)
+    model = nn.SyncBatchNorm.convert_sync_batchnorm(model)
+    model = DDP(
+        module=model,
+        device_ids=[args.local_rank],
+        output_device=args.local_rank,
+        find_unused_parameters=True
+    )
 
     reconstruction_criterion = get_reconstruction_criterion(
         args.reconstruction_criterion, spectrograms_helper)
@@ -731,30 +750,37 @@ if __name__ == '__main__':
 
     start_epoch = 0
     if args.resume_training_from is not None:
-        # TODO(theis): store and retrieve epoch from PyTorch save file
+        # TODO(theis): store and retrieve start epoch index from PyTorch save file
         import re
         checkpoint_path = pathlib.Path(args.resume_training_from)
         epoch_find_regex = '\d+\.pt'
         regex_epoch_output = re.search(epoch_find_regex, checkpoint_path.name)
         if regex_epoch_output is not None:
+            # TODO(theis): is this [:3] truncation really necessary??
+            assert int(regex_epoch_output[0][:3]) == int(regex_epoch_output[0])
             start_epoch = int(regex_epoch_output[0][:3])
         else:
             raise ValueError("Could not retrieve epoch from path")
-        model.load_state_dict(torch.load(checkpoint_path,
-                                         map_location=device)
-                              )
+
+        model.load_state_dict(
+            torch.load(
+                checkpoint_path,
+                map_location=lambda storage, loc: storage.cuda(args.local_rank)
+                )
+            )
 
     optimizer = optim.Adam(model.parameters(), lr=args.lr)
     scheduler = None
     if args.sched == 'cycle':
         scheduler = CycleScheduler(
             optimizer, args.lr,
-            n_iter=len(loader) * args.num_training_epochs, momentum=None
+            n_iter=len(train_loader) * args.num_training_epochs, momentum=None
         )
 
     MAIN_DIR = pathlib.Path(DIRPATH) / 'data'
     CHECKPOINTS_DIR_PATH = MAIN_DIR / f'checkpoints/{run_ID}/'
-    if not (args.dry_run or args.disable_writes_to_disk):
+    if is_master_process() and not (
+            args.dry_run or args.disable_writes_to_disk):
         os.makedirs(CHECKPOINTS_DIR_PATH, exist_ok=True)
 
         with open(CHECKPOINTS_DIR_PATH / 'command_line_parameters.json', 'w') as f:
@@ -764,18 +790,20 @@ if __name__ == '__main__':
 
         os.makedirs(MAIN_DIR / f'samples/{run_ID}/', exist_ok=True)
 
-    tensorboard_writer = None
-    if not (args.dry_run or args.disable_tensorboard
-            or args.disable_writes_to_disk):
+    tensorboard_writer: Optional[SummaryWriter] = None
+    if is_master_process() and not (args.dry_run or args.disable_tensorboard
+                                    or args.disable_writes_to_disk):
         tensorboard_dir_path = MAIN_DIR / f'runs/{run_ID}/'
         os.makedirs(tensorboard_dir_path, exist_ok=True)
         tensorboard_writer = SummaryWriter(tensorboard_dir_path)
 
     print("Starting training")
-    if tensorboard_writer is not None and validation_loader is not None:
+    if is_master_process() and (
+            tensorboard_writer is not None
+            and non_distributed_validation_loader is not None):
         # print initial samples, prior to training
         add_audio_and_image_samples_tensorboard(
-            model, validation_loader,
+            model.module, non_distributed_validation_loader,
             tensorboard_writer,
             args.num_validation_samples_audio_tensorboard,
             spectrograms_helper,
@@ -783,8 +811,12 @@ if __name__ == '__main__':
             'VALIDATION',
             device)
 
+    dist.barrier()
     for epoch_index in range(start_epoch, args.num_training_epochs):
-        train(epoch_index, loader, model, reconstruction_criterion,
+        if train_sampler is not None:
+            train_sampler.set_epoch(epoch_index)
+
+        train(epoch_index, train_loader, model, reconstruction_criterion,
               optimizer, scheduler, device,
               reconstruction_metrics,
               run_id=run_ID,
@@ -794,13 +826,15 @@ if __name__ == '__main__':
               tensorboard_audio_interval_epochs=3,
               tensorboard_num_audio_samples=5,
               dry_run=args.dry_run,
-              clip_grad_norm=args.clip_grad_norm)
+              clip_grad_norm=args.clip_grad_norm,
+              train_logs_frequency_batches=args.train_logs_frequency_batches)
 
-        if args.dry_run or args.disable_writes_to_disk:
+        if not is_master_process() or args.dry_run or args.disable_writes_to_disk:
             pass
         else:
             if (epoch_index == args.num_training_epochs - 1  # save last run
                     or (epoch_index-start_epoch) % args.save_frequency == 0):
+
                 checkpoint_filename = (f'vqvae_{dataset_name}_'
                                        f'{str(epoch_index + 1).zfill(3)}.pt')
                 torch.save(
@@ -808,19 +842,23 @@ if __name__ == '__main__':
                         CHECKPOINTS_DIR_PATH / checkpoint_filename
                 )
 
-        if tensorboard_writer is not None:
+        if is_master_process() and tensorboard_writer is not None:
             add_audio_and_image_samples_tensorboard(
-                model, loader,
+                model.module, train_loader,
                 tensorboard_writer,
                 args.num_validation_samples_audio_tensorboard,
                 spectrograms_helper,
                 epoch_index,
                 'TRAINING',
                 device)
+        dist.barrier()
 
         if (validation_loader is not None
                 and epoch_index % args.validation_frequency == 0):
             # eval on validation set
+            if validation_sampler is not None:
+                validation_sampler.set_epoch(epoch_index)
+
             with torch.no_grad():
                 (reconstruction_loss_validation, latent_loss_validation,
                  perplexity_t_validation, perplexity_b_validation,
@@ -830,14 +868,16 @@ if __name__ == '__main__':
                     reconstruction_metrics,
                     dry_run=args.dry_run,
                     latent_loss_weight=args.latent_loss_weight)
+                dist.barrier()
 
-                if tensorboard_writer is not None and not (
-                        args.dry_run or args.disable_writes_to_disk):
+                if is_master_process() and (
+                        tensorboard_writer is not None
+                        and not (args.dry_run or args.disable_writes_to_disk)):
                     write_vqvae_scalars_to_tensorboard(
                         tensorboard_writer,
                         'vqvae-validation',
                         epoch_index,
-                        model,
+                        model.module,
                         args.latent_loss_weight,
                         args.reconstruction_criterion,
                         reconstruction_loss_validation,
@@ -857,7 +897,7 @@ if __name__ == '__main__':
                     # if (epoch_index+1 % args.tensorboard_audio_interval_epochs
                     #         == 0):
                     add_audio_and_image_samples_tensorboard(
-                        model, validation_loader,
+                        model.module, validation_loader,
                         tensorboard_writer,
                         args.num_validation_samples_audio_tensorboard,
                         spectrograms_helper,
@@ -866,3 +906,7 @@ if __name__ == '__main__':
                         device)
 
                     tensorboard_writer.flush()
+                dist.barrier()
+
+    # Tear down the process group
+    dist.destroy_process_group()
