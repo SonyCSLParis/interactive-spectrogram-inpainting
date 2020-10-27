@@ -143,7 +143,7 @@ class QuantizedBottleneckWithRestarts(ProductVectorQuantizer):
 
     @property
     def embed(self) -> Tensor:
-        return self.embeddings[0]
+        return self.embeddings[0].t()
 
     def forward(self, input: Tensor) -> Tuple[Tensor, Tensor,
                                               LongTensor, Tensor]:
