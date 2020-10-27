@@ -34,6 +34,7 @@ from utils.losses.spectral import (
     JukeboxMultiscaleSpectralLoss_fromSpectrogram,
     DDSPMultiscaleSpectralLoss_fromSpectrogram)
 from utils.training.scheduler import CycleScheduler
+from utils.distributed import is_distributed, is_master_process
 
 import matplotlib as mpl
 # use matplotlib without an X server
@@ -46,14 +47,6 @@ DIRPATH = os.path.dirname(os.path.abspath(__file__))
 HOP_LENGTH = 512
 N_FFT = 2048
 FS_HZ = 16000
-
-
-def is_distributed() -> bool:
-    return torch.distributed.is_initialized()
-
-
-def is_master_process() -> bool:
-    return not is_distributed() or torch.distributed.get_rank() == 0
 
 
 def get_spectrograms_helper(args) -> SpectrogramsHelper:
@@ -506,6 +499,8 @@ if __name__ == '__main__':
     parser.add_argument('--resnet_layers_per_downsampling_block', type=int,
                         default=4)
     parser.add_argument('--resnet_expansion', type=int, default=1)
+
+    # DistributedDataParallel arguments
     parser.add_argument(
         '--local_rank', type=int, default=0,
         help="This is provided by torch.distributed.launch")
