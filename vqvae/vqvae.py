@@ -323,8 +323,8 @@ class VQVAE(nn.Module):
         """
         with open(parameters_json_path, 'r') as f:
             parameters = json.load(f)
-            vqvae = cls(**parameters, encoders=encoders,
-                        decoders=decoders)
+        vqvae = cls(**parameters, encoders=encoders,
+                    decoders=decoders)
 
         model_state_dict = torch.load(model_weights_checkpoint_path,
                                       map_location=device)

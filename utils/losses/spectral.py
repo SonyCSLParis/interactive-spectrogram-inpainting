@@ -57,7 +57,8 @@ class MultiscaleSpectralLoss(Loss):
         # ensures that they are located on the appropriate device
         self.windows = nn.ParameterList(
             nn.Parameter(
-                torch.hann_window(window_length).float(), requires_grad=False)
+                torch.hann_window(window_length).float(),
+                requires_grad=False)
             for window_length in self.window_lengths)
 
         assert lin_loss_alpha >= 0. and log_loss_alpha >= 0., (
