@@ -1,25 +1,33 @@
-from typing import Mapping
+from typing import Any, Mapping, Optional
 import argparse
 import pickle
 import json
 import pathlib
 import os
+
+import torchvision
+from utils.datasets.label_encoders import dump_label_encoders
+from vqvae import encoder_decoder
 import soundfile
 import numpy as np
 from sklearn.preprocessing import LabelEncoder
 
 import torch
+import torch.distributed as dist
 from torch import nn
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, DistributedSampler
+from torch.nn.parallel import DistributedDataParallel as DDP
 import lmdb
 from tqdm import tqdm
 
 from utils.datasets.lmdb_dataset import CodeRow, LMDBDataset
-from vqvae import VQVAE
+from vqvae.vqvae import VQVAE
 from utils.misc import expand_path, get_spectrograms_helper
 
 from pytorch_nsynth import NSynth
-from GANsynth_pytorch.loader import WavToSpectrogramDataLoader
+from GANsynth_pytorch.loader import (WavToSpectrogramDataLoader,
+                                     make_masked_phase_transform)
+from utils.distributed import is_master_process
 
 # HOP_LENGTH = 512
 # N_FFT = 2048
@@ -27,45 +35,57 @@ from GANsynth_pytorch.loader import WavToSpectrogramDataLoader
 
 
 def extract(lmdb_env, loader: WavToSpectrogramDataLoader,
-            model: VQVAE,
+            model: DDP,
             device: str,
-            label_encoders: Mapping[str, LabelEncoder] = {}):
-    index = 0
+            label_encoders: Mapping[str, LabelEncoder] = {},
+            ):
+    codes_db = lmdb_env.open_db(
+        'codes'.encode('utf-8'),
+        dupsort=False  # skip duplicate keys
+    )
 
-    parallel_model = nn.DataParallel(model)
+    if is_master_process():
+        with lmdb_env.begin(write=True) as txn:
+            # store the label encoders along with the database
+            # this allows for future conversions
+            txn.put('label_encoders'.encode('utf-8'), pickle.dumps(
+                label_encoders))
 
-    with lmdb_env.begin(write=True) as txn:
-        pbar_loader = tqdm(loader)
+    attribute_names = label_encoders.keys()
 
-        # store the label encoders along with the database
-        # this allows future conversions
-        txn.put('label_encoders'.encode('utf-8'), pickle.dumps(label_encoders))
+    pbar_loader = tqdm(loader)
+    for (sample_batch, *categorical_attributes_batch,
+            attributes_batch) in pbar_loader:
+        sample_batch = sample_batch.to(device)
+        sample_names = attributes_batch['note_str']
 
-        attribute_names = label_encoders.keys()
+        *_, id_t, id_b = model(sample_batch)
+        id_t = id_t.detach().cpu().numpy()
+        id_b = id_b.detach().cpu().numpy()
 
-        for (sample_batch, *categorical_attributes_batch,
-                attributes_batch) in pbar_loader:
-            sample_batch = sample_batch.to(device)
-            sample_names = attributes_batch['note_str']
+        for top, bottom, *attributes, sample_name in zip(
+                id_t, id_b, *categorical_attributes_batch, sample_names):
+            row = CodeRow(top=top, bottom=bottom,
+                          attributes=dict(zip(attribute_names,
+                                              attributes)),
+                          filename=sample_name)
+            # starting LMDB transaction here to avoid deadlocks on distributed access
+            with lmdb_env.begin(db=codes_db, write=True) as txn:
+                txn.put(sample_name.encode('utf-8'), pickle.dumps(row))
+            # pbar_loader.set_description(f'inserted: {index}')
 
-            *_, id_t, id_b = parallel_model(sample_batch)
-            id_t = id_t.detach().cpu().numpy()
-            id_b = id_b.detach().cpu().numpy()
-
-            for top, bottom, *attributes, sample_name in zip(
-                    id_t, id_b, *categorical_attributes_batch, sample_names):
-                row = CodeRow(top=top, bottom=bottom,
-                              attributes=dict(zip(attribute_names,
-                                                  attributes)),
-                              filename=sample_name)
-                txn.put(str(index).encode('utf-8'), pickle.dumps(row))
-                index += 1
-                pbar_loader.set_description(f'inserted: {index}')
-
-        txn.put('length'.encode('utf-8'), str(index).encode('utf-8'))
+        # txn.put('length'.encode('utf-8'), str(index).encode('utf-8'))
 
 
 if __name__ == '__main__':
+    # These are the parameters used to initialize the process group
+    env_dict = {
+        key: os.environ[key]
+        for key in ("MASTER_ADDR", "MASTER_PORT", "RANK", "WORLD_SIZE")
+    }
+    print(f"[{os.getpid()}] Initializing process group with: {env_dict}")
+    dist.init_process_group(backend="nccl")
+
     class StoreDictKeyPair(argparse.Action):
         def __call__(self, parser, namespace, values, option_string=None):
             my_dict = {}
@@ -91,7 +111,16 @@ if __name__ == '__main__':
     parser.add_argument('--vqvae_training_parameters_path', type=str,
                         required=True)
     parser.add_argument('--size', type=int)
+    parser.add_argument('--overwrite_existing_dump', action='store_true')
     parser.add_argument('--disable_database_creation', action='store_true')
+
+    # DistributedDataParallel arguments
+    parser.add_argument(
+        '--local_rank', type=int, default=0,
+        help="This is provided by torch.distributed.launch")
+    parser.add_argument(
+        '--local_world_size', type=int, default=1,
+        help="Number of GPUs per node, required by torch.distributed.launch")
 
     args = parser.parse_args()
 
@@ -110,10 +139,10 @@ if __name__ == '__main__':
 
     OUTPUT_DIR = MAIN_DIR / f'vqvae-{vqvae_id}-weights-{vqvae_model_filename}/'
 
-    if not args.disable_database_creation:
+    if not args.disable_database_creation and is_master_process():
         os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    device = f'cuda:{args.local_rank}' if torch.cuda.is_available() else 'cpu'
 
     audio_directory_paths = [expand_path(path)
                              for path in args.dataset_audio_directory_paths]
@@ -130,43 +159,84 @@ if __name__ == '__main__':
                 "otherwise the outputs will overwrite one another"
                 )
 
-    vqvae = VQVAE.from_parameters_and_weights(
-        VQVAE_MODEL_PARAMETERS_PATH,
-        VQVAE_WEIGHTS_PATH)
-    vqvae.to(device)
-    vqvae.eval()
-
     # retrieve n_fft, hop length, window length parameters...
     with open(VQVAE_TRAINING_PARAMETERS_PATH, 'r') as f:
         vqvae_training_parameters = json.load(f)
-    spectrograms_helper = get_spectrograms_helper(
-        device=device, **vqvae_training_parameters)
+    with open(VQVAE_MODEL_PARAMETERS_PATH, 'r') as f:
+        vqvae_model_parameters = json.load(f)
+    spectrograms_helper = get_spectrograms_helper(**vqvae_training_parameters)
+    spectrograms_helper.to(device)
 
     for dataset_name, json_data_path in named_dataset_json_data_paths.items():
         assert json_data_path.is_file()
         valid_pitch_range = vqvae_training_parameters['valid_pitch_range']
-        transform = vqvae.output_transform
+        transform: Optional[torchvision.transforms.Lambda] = None
+        if vqvae_model_parameters['output_spectrogram_min_magnitude'] is not None:
+            transform = make_masked_phase_transform(
+                vqvae_model_parameters['output_spectrogram_min_magnitude'])
 
+        print("loading dataset", dataset_name)
         nsynth_dataset_with_samples_names = NSynth(
             audio_directory_paths=audio_directory_paths,
             json_data_path=json_data_path,
             valid_pitch_range=valid_pitch_range,
             categorical_field_list=args.categorical_fields,
-            squeeze_mono_channel=True
+            squeeze_mono_channel=True,
+            return_full_metadata=True,
+            remove_qualities_str_from_full_metadata=True,
         )
 
+        print("instantiating wav-to-spectrogram dataloader", dataset_name)
         # converts wavforms to spectrograms on-the-fly on GPU
+        distributed_sampler = DistributedSampler(
+            nsynth_dataset_with_samples_names,
+            shuffle=False)
         loader = WavToSpectrogramDataLoader(
             nsynth_dataset_with_samples_names,
+            sampler=distributed_sampler,
             spectrograms_helper=spectrograms_helper,
             batch_size=args.batch_size,
             num_workers=args.num_workers, shuffle=False,
             transform=transform,
         )
+        batch_size, in_channel, image_height, image_width = next(iter(loader))[0].shape
+        image_size = image_height, image_width
+        print("image_size:", image_size)
 
         label_encoders = nsynth_dataset_with_samples_names.label_encoders
 
-        in_channel = 2
+        encoders: Optional[Mapping[str, Any]] = None
+        decoders: Optional[Mapping[str, Any]] = None
+        if vqvae_training_parameters['use_resnet']:
+            encoders, decoders = encoder_decoder.xresnet_unet_from_json_parameters(
+                in_channel,
+                image_size,
+                VQVAE_TRAINING_PARAMETERS_PATH
+            )
+
+        vqvae = VQVAE.from_parameters_and_weights(
+            VQVAE_MODEL_PARAMETERS_PATH,
+            VQVAE_WEIGHTS_PATH,
+            encoders=encoders,
+            decoders=decoders)
+
+        model = vqvae.to(device)
+        model = nn.SyncBatchNorm.convert_sync_batchnorm(model)
+        model = DDP(
+            module=model,
+            device_ids=[args.local_rank],
+            output_device=args.local_rank,
+            find_unused_parameters=True
+        )
+
+        model.load_state_dict(
+            torch.load(
+                VQVAE_WEIGHTS_PATH,
+                map_location=lambda storage, loc: storage.cuda(args.local_rank)
+                )
+            )
+
+        model.eval()
 
         # TODO(theis): compute appropriate size for the map,
         # for now it's a generous overshoot
@@ -175,15 +245,25 @@ if __name__ == '__main__':
         lmdb_path = expand_path(OUTPUT_DIR / dataset_name)
 
         if not args.disable_database_creation:
-            os.makedirs(lmdb_path, exist_ok=False)
-            # store command-line parameters
-            with open(OUTPUT_DIR / 'command_line_parameters.json', 'w') as f:
-                json.dump(args.__dict__, f, indent=4)
+            if is_master_process():
+                os.makedirs(lmdb_path, exist_ok=args.overwrite_existing_dump)
+                # store command-line parameters
+                with open(OUTPUT_DIR / 'command_line_parameters.json', 'w') as f:
+                    json.dump(args.__dict__, f, indent=4)
 
-            env = lmdb.open(str(lmdb_path), map_size=map_size)
+                dump_label_encoders(
+                    nsynth_dataset_with_samples_names.label_encoders,
+                    lmdb_path)
+
+            env = lmdb.open(
+                str(lmdb_path),
+                map_size=map_size,
+                max_dbs=2,
+                )
             with torch.no_grad():
                 print("Start extraction for dataset", dataset_name)
-                extract(env, loader, vqvae, device,
+                extract(env, loader, model,
+                        device,
                         label_encoders=label_encoders)
 
         print("Start sanity-check for dataset", dataset_name)
@@ -191,28 +271,32 @@ if __name__ == '__main__':
         # of re-synthesized codemaps
         codes_dataset = LMDBDataset(
             str(lmdb_path),
-            classes_for_conditioning=args.categorical_fields)
+            classes_for_conditioning=args.categorical_fields,
+            dataset_db_name='codes')
+
         codes_loader = DataLoader(codes_dataset, batch_size=8,
                                   shuffle=True)
-        with torch.no_grad():
-            codes_top_sample, codes_bottom_sample, attributes = (
-                next(iter(codes_loader)))
-            decoded_sample = vqvae.decode_code(
-                codes_top_sample.to(device),
-                codes_bottom_sample.to(device))
 
-            def make_audio(mag_and_IF_batch: torch.Tensor) -> np.ndarray:
-                audio_batch = spectrograms_helper.to_audio(
-                    mag_and_IF_batch)
-                audio_mono_concatenated = (audio_batch
-                                           .flatten().cpu().numpy())
-                return audio_mono_concatenated
+        if is_master_process():
+            with torch.no_grad():
+                codes_top_sample, codes_bottom_sample, attributes = (
+                    next(iter(codes_loader)))
+                decoded_sample = model.module.decode_code(
+                    codes_top_sample.to(device),
+                    codes_bottom_sample.to(device))
 
-            audio_sample_path = os.path.join(
-                lmdb_path,
-                'vqvae_codes_extraction_samples.wav')
-            soundfile.write(audio_sample_path,
-                            make_audio(decoded_sample),
-                            samplerate=vqvae_training_parameters['fs_hz'])
-            print("Stored sanity-check decoding of stored codes at",
-                  audio_sample_path)
+                def make_audio(mag_and_IF_batch: torch.Tensor) -> np.ndarray:
+                    audio_batch = spectrograms_helper.to_audio(
+                        mag_and_IF_batch)
+                    audio_mono_concatenated = (audio_batch
+                                               .flatten().cpu().numpy())
+                    return audio_mono_concatenated
+
+                audio_sample_path = os.path.join(
+                    lmdb_path,
+                    'vqvae_codes_extraction_samples.wav')
+                soundfile.write(audio_sample_path,
+                                make_audio(decoded_sample),
+                                samplerate=vqvae_training_parameters['fs_hz'])
+                print("Stored sanity-check decoding of stored codes at",
+                      audio_sample_path)

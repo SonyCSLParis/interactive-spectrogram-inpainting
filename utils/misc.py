@@ -7,7 +7,7 @@ from GANsynth_pytorch.spectrograms_helper import (
 )
 
 
-def get_spectrograms_helper(device: str = 'cuda', **kwargs
+def get_spectrograms_helper(**kwargs
                             ) -> SpectrogramsHelper:
     """Return a SpectrogramsHelper instance using the provided parameters"""
     spectrogram_parameters = {
@@ -15,7 +15,6 @@ def get_spectrograms_helper(device: str = 'cuda', **kwargs
         'n_fft': kwargs['n_fft'],
         'hop_length': kwargs['hop_length'],
         'window_length': kwargs['window_length'],
-        'device': device,
     }
     if kwargs['use_mel_scale']:
         return MelSpectrogramsHelper(

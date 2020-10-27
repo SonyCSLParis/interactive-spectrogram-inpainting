@@ -1,4 +1,6 @@
-from typing import Iterable, Mapping, Optional, Tuple, Union
+import pathlib
+from typing import Iterable, Mapping, Optional, Tuple, Union, overload
+import json
 
 from torch import Tensor
 from torch import nn
@@ -340,7 +342,7 @@ class NoFlattenXResNet(xresnet.XResNet):
 
 
 def get_xresnet_unet(in_channels: int,
-                     image_size: Tuple[int, int],  # channels-first
+                     image_size: Tuple[int, int],
                      downsampling_factors: Mapping[str, int],
                      hidden_channels: int,
                      embeddings_dimension: int,
@@ -422,4 +424,24 @@ def get_xresnet_unet(in_channels: int,
         **decoders_kwargs)
     decoders = {'top': decoder_t,
                 'bottom': decoder_b}
+    return encoders, decoders
+
+
+def xresnet_unet_from_json_parameters(
+        in_channels: int,
+        image_size: Tuple[int, int],
+        parameters_json_path: pathlib.Path):
+    with open(parameters_json_path, 'r') as f:
+        command_line_parameters = json.load(f)
+
+    assert command_line_parameters['use_resnet']
+    encoders, decoders = get_xresnet_unet(
+        in_channels,
+        image_size,
+        command_line_parameters['resolution_factors'],
+        hidden_channels=command_line_parameters['num_hidden_channels'],
+        embeddings_dimension=command_line_parameters['embeddings_dimension'],
+        layers_per_downsampling_block=command_line_parameters['resnet_layers_per_downsampling_block'],
+        expansion=command_line_parameters['resnet_expansion'],
+    )
     return encoders, decoders
