@@ -18,7 +18,6 @@ import functools
 import pathlib
 import matplotlib as mpl
 import matplotlib.pyplot as plt
-import librosa
 import librosa.display
 from sklearn.preprocessing import LabelEncoder
 from zipfile import ZipFile
@@ -34,6 +33,9 @@ from flask_cors import CORS
 
 import logging
 from logging import handlers as logging_handlers
+
+
+torchaudio.set_audio_backend('sox_io')
 
 # use matplotlib without an X server
 # on desktop, this prevents matplotlib windows from popping around
