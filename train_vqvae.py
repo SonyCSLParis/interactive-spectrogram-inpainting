@@ -736,6 +736,15 @@ if __name__ == '__main__':
         find_unused_parameters=True
     )
 
+    optimizer = optim.Adam(model.parameters(), lr=args.lr)
+
+    scheduler = None
+    if args.sched == 'cycle':
+        scheduler = CycleScheduler(
+            optimizer, args.lr,
+            n_iter=len(train_loader) * args.num_training_epochs, momentum=None
+        )
+
     reconstruction_criterion = get_reconstruction_criterion(
         args.reconstruction_criterion, spectrograms_helper)
 
@@ -747,6 +756,8 @@ if __name__ == '__main__':
         for metric_name in reconstruction_metric_names}
 
     start_epoch = 0
+    # track the lowest validation loss reached for checkpointing
+    best_validation_loss = np.inf
     if args.resume_training_from is not None:
         # TODO(theis): store and retrieve start epoch index from PyTorch save file
         import re
@@ -760,20 +771,18 @@ if __name__ == '__main__':
         else:
             raise ValueError("Could not retrieve epoch from path")
 
-        model.load_state_dict(
+        restore_checkpoint = (
             torch.load(
                 checkpoint_path,
                 map_location=lambda storage, loc: storage.cuda(args.local_rank)
                 )
             )
-
-    optimizer = optim.Adam(model.parameters(), lr=args.lr)
-    scheduler = None
-    if args.sched == 'cycle':
-        scheduler = CycleScheduler(
-            optimizer, args.lr,
-            n_iter=len(train_loader) * args.num_training_epochs, momentum=None
-        )
+        model.load_state_dict(restore_checkpoint['model'])
+        optimizer.load_state_dict(restore_checkpoint['optimizer'])
+        start_epoch = restore_checkpoint['epoch'] + 1
+        best_validation_loss = restore_checkpoint['validation_loss']
+        if scheduler is not None:
+            scheduler.load_state_dict(restore_checkpoint['scheduler'])
 
     MAIN_DIR = pathlib.Path(DIRPATH) / 'data'
     CHECKPOINTS_DIR_PATH = MAIN_DIR / f'checkpoints/{run_ID}/'
@@ -794,6 +803,10 @@ if __name__ == '__main__':
         tensorboard_dir_path = MAIN_DIR / f'runs/{run_ID}/'
         os.makedirs(tensorboard_dir_path, exist_ok=True)
         tensorboard_writer = SummaryWriter(tensorboard_dir_path)
+
+    checkpoint_filename = (f'vqvae-{dataset_name}.pt')
+    best_performing_checkpoint_filename = (
+        f'vqvae-{dataset_name}-best_performing.pt')
 
     print("Starting training")
     if is_master_process() and (
@@ -827,19 +840,6 @@ if __name__ == '__main__':
               clip_grad_norm=args.clip_grad_norm,
               train_logs_frequency_batches=args.train_logs_frequency_batches)
 
-        if not is_master_process() or args.dry_run or args.disable_writes_to_disk:
-            pass
-        else:
-            if (epoch_index == args.num_training_epochs - 1  # save last run
-                    or (epoch_index-start_epoch) % args.save_frequency == 0):
-
-                checkpoint_filename = (f'vqvae_{dataset_name}_'
-                                       f'{str(epoch_index + 1).zfill(3)}.pt')
-                torch.save(
-                        model.state_dict(),
-                        CHECKPOINTS_DIR_PATH / checkpoint_filename
-                )
-
         if is_master_process() and tensorboard_writer is not None:
             add_audio_and_image_samples_tensorboard(
                 model.module, train_loader,
@@ -851,8 +851,8 @@ if __name__ == '__main__':
                 device)
         dist.barrier()
 
-        if (validation_loader is not None
-                and epoch_index % args.validation_frequency == 0):
+        validation_loss: Optional[float] = None
+        if validation_loader is not None:
             # eval on validation set
             if validation_sampler is not None:
                 validation_sampler.set_epoch(epoch_index)
@@ -866,7 +866,7 @@ if __name__ == '__main__':
                     reconstruction_metrics,
                     dry_run=args.dry_run,
                     latent_loss_weight=args.latent_loss_weight)
-                dist.barrier()
+                validation_loss = dist.gather(reconstruction_loss_validation)
 
                 if is_master_process() and (
                         tensorboard_writer is not None
@@ -905,6 +905,35 @@ if __name__ == '__main__':
 
                     tensorboard_writer.flush()
                 dist.barrier()
+
+        # store results
+        if not is_master_process() or args.dry_run or args.disable_writes_to_disk:
+            pass
+        else:
+            if (epoch_index == args.num_training_epochs - 1  # save last run
+                    or (epoch_index-start_epoch) % args.save_frequency == 0):
+                checkpoint = dict(
+                    model=model.state_dict(),
+                    epoch=epoch_index,
+                    optimizer=optimizer.state_dict(),
+                    scheduler=(scheduler.state_dict()
+                               if scheduler is not None else None),
+                    validation_loss=validation_loss
+                )
+                torch.save(
+                    checkpoint,
+                    CHECKPOINTS_DIR_PATH / checkpoint_filename
+                )
+
+            if (validation_loss is not None
+                    and validation_loss < best_validation_loss):
+                # update tracked best validation loss
+                best_validation_loss = validation_loss
+
+                torch.save(
+                    checkpoint,
+                    CHECKPOINTS_DIR_PATH / best_performing_checkpoint_filename
+                )
 
     # Tear down the process group
     dist.destroy_process_group()

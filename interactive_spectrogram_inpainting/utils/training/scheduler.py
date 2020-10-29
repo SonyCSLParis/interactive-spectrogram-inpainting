@@ -1,3 +1,4 @@
+import warnings
 from math import cos, pi, floor, sin
 
 from torch.optim import lr_scheduler
@@ -188,10 +189,11 @@ def get_cosine_schedule_with_warmup(optimizer, num_warmup_steps,
 # Borrowed from https://github.com/fastai/fastai and changed to make it runs like PyTorch lr scheduler
 
 
-class CycleAnnealScheduler:
+class CycleAnnealScheduler(lr_scheduler._LRScheduler):
     def __init__(
         self, optimizer, lr_max, lr_divider, cut_point, step_size, momentum=None
     ):
+        super().__init__(optimizer)
         self.lr_max = lr_max
         self.lr_divider = lr_divider
         self.cut_point = step_size // cut_point
@@ -199,9 +201,12 @@ class CycleAnnealScheduler:
         self.iteration = 0
         self.cycle_step = int(step_size * (1 - cut_point / 100) / 2)
         self.momentum = momentum
-        self.optimizer = optimizer
 
     def get_lr(self):
+        if not self._get_lr_called_within_step:
+            warnings.warn("To get the last learning rate computed by the scheduler, "
+                          "please use `get_last_lr()`.", UserWarning)
+
         if self.iteration > 2 * self.cycle_step:
             cut = (self.iteration - 2 * self.cycle_step) / (
                 self.step_size - 2 * self.cycle_step
@@ -282,7 +287,7 @@ class Phase:
         return self.n >= self.n_iter
 
 
-class CycleScheduler:
+class CycleScheduler(lr_scheduler._LRScheduler):
     def __init__(
         self,
         optimizer,
@@ -293,7 +298,7 @@ class CycleScheduler:
         warmup_proportion=0.3,
         phase=('linear', 'cos'),
     ):
-        self.optimizer = optimizer
+        super().__init__(optimizer)
 
         phase1 = int(n_iter * warmup_proportion)
         phase2 = n_iter - phase1
