@@ -594,8 +594,6 @@ if __name__ == '__main__':
         resampler = torchaudio.transforms.Resample(
             orig_freq=fs_hz, new_freq=args.sample_rate_hz)
         sample_audio = resampler(sample_audio.cuda())
-        toFloat = transforms.Lambda(lambda x: (x / np.iinfo(np.int16).max))
-        sample_audio = toFloat(sample_audio)
         condition_top_audio = sample_audio.flatten().cpu().numpy()
 
     def make_audio(mag_and_IF_batch: torch.Tensor,

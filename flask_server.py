@@ -4,7 +4,7 @@ from priors.transformer import (SelfAttentiveVQTransformer,
                                 VQNSynthTransformer)
 from sample import (sample_model, make_conditioning_tensors,
                     ConditioningMap, make_conditioning_map)
-from utils.datasets.lmdb_dataset import LMDBDataset
+from dataset import LMDBDataset
 from GANsynth_pytorch.spectrograms_helper import SpectrogramsHelper
 from utils.misc import expand_path, get_spectrograms_helper
 
@@ -476,26 +476,32 @@ def test_generate():
     return response
 
 
-def get_duration_sox_s(audio_file_path: str) -> float:
-    """Retrieve duration of a signal without loading it"""
-    sox_signalinfo_t = torchaudio.info(audio_file_path)[0]
-    num_channels = sox_signalinfo_t.channels
-    file_fs_hz = sox_signalinfo_t.rate
-    duration_n = sox_signalinfo_t.length // num_channels
-    return duration_n / file_fs_hz
-
-
 def get_duration_sox_n(audio_file_path: str) -> float:
-    """Retrieve duration of a signal without loading it"""
+    """Retrieve duration of a signal without loading it
+
+    This uses the global sampling frequency of the loaded models
+    """
     global FS_HZ
     assert FS_HZ is not None
-    sox_signalinfo_t = torchaudio.info(audio_file_path)[0]
-    num_channels = sox_signalinfo_t.channels
-    file_fs_hz = sox_signalinfo_t.rate
-    duration_n = sox_signalinfo_t.length // num_channels
+    audiometadata = torchaudio.info(audio_file_path)
+    num_frames = audiometadata.num_frames
+    num_channels = audiometadata.num_channels
+    original_fs_hz = audiometadata.sample_rate
+    duration_n = num_frames // num_channels
     # TODO(theis): probably not exact value
-    duration_n_resampled = int(duration_n * (FS_HZ / file_fs_hz))
+    duration_n_resampled = int(duration_n * (FS_HZ / original_fs_hz))
     return duration_n_resampled
+
+
+def get_duration_sox_s(audio_file_path: str) -> float:
+    """Retrieve duration of a signal without loading it
+
+    This uses the global sampling frequency of the loaded models
+    """
+    global FS_HZ
+    assert FS_HZ is not None
+    duration_n = get_duration_sox_n(audio_file_path)
+    return duration_n / FS_HZ
 
 
 def get_vqvae_top_resolution_n() -> int:
