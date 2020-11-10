@@ -3,6 +3,12 @@ title: Spectrogram Inpainting for Interactive Generation of Instrument Sounds
 layout: default
 ---
 
+This is joint work by [Théis Bazin](https://twitter.com/theisbazin), [Gaëtan Hadjeres](https://twitter.com/gaetan_hadjeres),
+[Philippe Esling](https://esling.github.io/) and [Mikhail Malt](http://repmus.ircam.fr/malt), published
+at the 2020 Joint Conference on AI Music Creativity.
+Here is a [direct link](https://boblsturm.github.io/aimusic2020/papers/CSMC__MuMe_2020_paper_49.pdf)
+to the paper on the conference's server (PDF).
+
 In this paper, we adapt the [VQ-VAE-2 architecture][vq-vae-2] to the interactive generation of sounds.
 
 To this end, we introduce a modified version of the Mel-IF representation proposed in the
