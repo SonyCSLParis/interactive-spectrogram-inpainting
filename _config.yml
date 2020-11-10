@@ -1,6 +1,6 @@
 theme: jekyll-theme-cayman
 title: Spectrogram Inpainting for Interactive Generation of Instrument Sounds
-description: "This is the companion website for the eponymous anonymous submission"
+description: "Companion website for the eponymous paper published at the 2020 Joint Conference on AI Music Creativity"
 github: [metadata]
 
 markdown: kramdown
