@@ -22,14 +22,17 @@ except ModuleNotFoundError:
 
 from torch.utils.tensorboard.writer import SummaryWriter
 
-from utils.datasets.lmdb_dataset import LMDBDataset
-from utils.losses.prediction import LabelSmoothingLoss
-from priors.transformer import (VQNSynthTransformer,
-                                SelfAttentiveVQTransformer,
-                                UpsamplingVQTransformer)
-from utils.training.scheduler import (
+from interactive_spectrogram_inpainting.utils.datasets.lmdb_dataset import (
+    LMDBDataset)
+from interactive_spectrogram_inpainting.utils.losses.prediction import (
+    LabelSmoothingLoss)
+from interactive_spectrogram_inpainting.priors.transformer import (
+    VQNSynthTransformer,
+    SelfAttentiveVQTransformer,
+    UpsamplingVQTransformer)
+from interactive_spectrogram_inpainting.utils.training.scheduler import (
     CycleScheduler, get_cosine_schedule_with_warmup)
-from priors.sequence_mask import (
+from interactive_spectrogram_inpainting.priors.sequence_mask import (
     SequenceMask, BernoulliSequenceMask,
     UniformProbabilityBernoulliSequenceMask,
     UniformMaskedAmountSequenceMask, ContiguousZonesSequenceMask)

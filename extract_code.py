@@ -6,8 +6,6 @@ import pathlib
 import os
 
 import torchvision
-from utils.datasets.label_encoders import dump_label_encoders
-from vqvae import encoder_decoder
 import soundfile
 import numpy as np
 from sklearn.preprocessing import LabelEncoder
@@ -20,14 +18,21 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 import lmdb
 from tqdm import tqdm
 
-from utils.datasets.lmdb_dataset import CodeRow, LMDBDataset
-from vqvae.vqvae import VQVAE
-from utils.misc import expand_path, get_spectrograms_helper
-
 from pytorch_nsynth import NSynth
 from GANsynth_pytorch.loader import (WavToSpectrogramDataLoader,
                                      make_masked_phase_transform)
-from utils.distributed import is_master_process
+
+from interactive_spectrogram_inpainting.vqvae import encoder_decoder
+from interactive_spectrogram_inpainting.utils.datasets.lmdb_dataset import (
+    CodeRow, LMDBDataset)
+from interactive_spectrogram_inpainting.vqvae.vqvae import (
+    VQVAE)
+from interactive_spectrogram_inpainting.utils.datasets.label_encoders import (
+    dump_label_encoders)
+from interactive_spectrogram_inpainting.utils.misc import (
+    expand_path, get_spectrograms_helper)
+from interactive_spectrogram_inpainting.utils.distributed import (
+    is_master_process)
 
 # HOP_LENGTH = 512
 # N_FFT = 2048

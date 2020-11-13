@@ -28,13 +28,16 @@ from GANsynth_pytorch.normalizer import DataNormalizer
 import GANsynth_pytorch.utils.plots as gansynthplots
 from GANsynth_pytorch.spec_ops import _MEL_BREAK_FREQUENCY_HERTZ
 
-from vqvae.vqvae import VQVAE
-from vqvae.encoder_decoder import get_xresnet_unet
-from utils.losses.spectral import (
+from interactive_spectrogram_inpainting.vqvae.vqvae import VQVAE
+from interactive_spectrogram_inpainting.vqvae.encoder_decoder import (
+    get_xresnet_unet)
+from interactive_spectrogram_inpainting.utils.losses.spectral import (
     JukeboxMultiscaleSpectralLoss_fromSpectrogram,
     DDSPMultiscaleSpectralLoss_fromSpectrogram)
-from utils.training.scheduler import CycleScheduler
-from utils.distributed import is_distributed, is_master_process
+from interactive_spectrogram_inpainting.utils.training.scheduler import (
+    CycleScheduler)
+from interactive_spectrogram_inpainting.utils.distributed import (
+    is_distributed, is_master_process)
 
 import matplotlib as mpl
 # use matplotlib without an X server

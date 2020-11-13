@@ -18,13 +18,15 @@ from torch import nn
 from torch.nn import functional as F
 from torchvision.utils import save_image
 
-from utils.datasets.lmdb_dataset import LMDBDataset
-from vqvae.vqvae import VQVAE
-from priors.transformer import (
+from interactive_spectrogram_inpainting.utils.datasets.lmdb_dataset import (
+    LMDBDataset)
+from interactive_spectrogram_inpainting.vqvae.vqvae import VQVAE
+from interactive_spectrogram_inpainting.priors.transformer import (
     VQNSynthTransformer,
     SelfAttentiveVQTransformer, UpsamplingVQTransformer,
     Seq2SeqInputKind)
-from utils.misc import get_spectrograms_helper
+from interactive_spectrogram_inpainting.utils.misc import (
+    get_spectrograms_helper)
 
 if torch.cuda.is_available():
     torch.set_default_tensor_type(torch.cuda.FloatTensor)

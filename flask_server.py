@@ -1,12 +1,14 @@
-from vqvae.vqvae import VQVAE
-from priors.transformer import (SelfAttentiveVQTransformer,
-                                UpsamplingVQTransformer,
-                                VQNSynthTransformer)
+from interactive_spectrogram_inpainting.vqvae.vqvae import VQVAE
+from interactive_spectrogram_inpainting.priors.transformer import (
+    SelfAttentiveVQTransformer,
+    UpsamplingVQTransformer,
+    VQNSynthTransformer)
 from sample import (sample_model, make_conditioning_tensors,
                     ConditioningMap, make_conditioning_map)
 from dataset import LMDBDataset
-from GANsynth_pytorch.spectrograms_helper import SpectrogramsHelper
 from utils.misc import expand_path, get_spectrograms_helper
+
+from GANsynth_pytorch.spectrograms_helper import SpectrogramsHelper
 
 import soundfile
 from typing import Union, Tuple, Mapping, Optional, List
