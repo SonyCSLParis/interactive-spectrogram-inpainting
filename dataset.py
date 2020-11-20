@@ -24,8 +24,6 @@ class LMDBDataset(Dataset):
     Arguments:
         * path, str:
             The path to the directory containing the database
-        * active_class_labels, optional, Iterable[str], default=[]:
-            If provided,
     """
     def __init__(self, path, classes_for_conditioning: Sequence[str] = []):
         self.env = lmdb.open(
@@ -36,6 +34,7 @@ class LMDBDataset(Dataset):
             readahead=False,
             meminit=False,
         )
+        print("\n\nWARNING: DEPRECATED, use version in submodule utils.datasets\n\n")
         self.classes_for_conditioning = classes_for_conditioning
 
         if not self.env:
