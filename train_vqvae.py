@@ -1,5 +1,7 @@
 from typing import Optional, Mapping, Dict, List
 from datetime import datetime
+
+from torch.tensor import Tensor
 import uuid
 import argparse
 import pathlib
@@ -99,16 +101,15 @@ def write_vqvae_scalars_to_tensorboard(
         main_tag: str,
         global_step: int,
         model: VQVAE,
-        latent_loss_weight: float,
         reconstruction_criterion_name: str,
+        vqvae_loss: float,
         reconstruction_loss: float,
         latent_loss: float,
         codes_perplexity_top: float,
         codes_perplexity_bottom: float,
         ):
     vqvae_scalars = {
-        'combined_loss': (reconstruction_loss
-                          + latent_loss_weight * latent_loss),
+        'vqvae_loss': vqvae_loss,
         f'reconstruction_loss ({reconstruction_criterion_name})': (
             reconstruction_loss),
         'latent_loss': latent_loss,
@@ -218,6 +219,8 @@ def train(epoch: int, loader: DataLoader, model: VQVAE,
                 perplexity_b_accumulated / num_samples_seen_epoch)
 
             latent_loss_batch = latent_loss.item()
+            vqvae_loss = (reconstruction_loss_batch
+                          + latent_loss_weight * latent_loss_batch)
             status_bar.set_description_str((
                 f'epoch: {epoch + 1}|'
                 f'recons.: {average_reconstruction_loss_epoch:.4f}|'
@@ -236,8 +239,8 @@ def train(epoch: int, loader: DataLoader, model: VQVAE,
                 'vqvae-training',
                 num_samples_seen_total,
                 model.module,
-                latent_loss_weight,
                 type(reconstruction_criterion).__name__,
+                vqvae_loss,
                 reconstruction_loss_batch,
                 latent_loss_batch,
                 batch_perplexity_t_mean,
@@ -292,7 +295,8 @@ def evaluate(loader: DataLoader, model: nn.Module,
              reconstruction_metrics: Dict[str, Loss],
              use_amp: bool,
              latent_loss_weight: float = 0.25,
-             dry_run: bool = False):
+             dry_run: bool = False,
+             ):
     """Evaluate model and return metrics averaged over a validation/test set"""
     loader = tqdm(loader, desc='validation')
 
@@ -333,21 +337,33 @@ def evaluate(loader: DataLoader, model: nn.Module,
         if dry_run:
             break
 
-    reconstruction_loss_average = (
-        reconstruction_loss_total.item() / num_samples_seen)
-    latent_loss_average = latent_loss_total.item() / num_samples_seen
-    perplexity_t_average = (perplexity_t_total.item()
-                            / num_samples_seen)
-    perplexity_b_average = (perplexity_b_total.item()
-                            / num_samples_seen)
+    def reduce_average(tensor: Tensor) -> Tensor:
+        if not is_distributed():
+            return tensor
+        else:
+            dist.all_reduce(tensor)
+            return tensor / dist.get_world_size()
+
+    reconstruction_loss_average = reduce_average(
+        reconstruction_loss_total / num_samples_seen)
+    latent_loss_average = reduce_average(
+        latent_loss_total / num_samples_seen)
+    perplexity_t_average = reduce_average(
+        perplexity_t_total / num_samples_seen)
+    perplexity_b_average = reduce_average(
+        perplexity_b_total / num_samples_seen)
+
+    validation_loss = (reconstruction_loss_average
+                       + latent_loss_weight * latent_loss_average)
 
     reconstruction_metrics_average = {
-        metric_name: metric_total / num_samples_seen
+        metric_name: reduce_average(metric_total / num_samples_seen)
         for metric_name, metric_total in (
             reconstruction_metrics_total.items())
     }
 
-    return (reconstruction_loss_average, latent_loss_average,
+    return (validation_loss,
+            reconstruction_loss_average, latent_loss_average,
             perplexity_t_average, perplexity_b_average,
             reconstruction_metrics_average)
 
@@ -878,13 +894,15 @@ if __name__ == '__main__':
         dist.barrier()
 
         validation_loss: Optional[float] = None
+        reconstruction_metrics_validation: Optional[Dict[str, float]] = None
         if validation_loader is not None:
             # eval on validation set
             if validation_sampler is not None:
                 validation_sampler.set_epoch(epoch_index)
 
             with torch.no_grad():
-                (reconstruction_loss_validation, latent_loss_validation,
+                (validation_loss,
+                 reconstruction_loss_validation, latent_loss_validation,
                  perplexity_t_validation, perplexity_b_validation,
                  reconstruction_metrics_validation) = evaluate(
                     validation_loader, model, reconstruction_criterion,
@@ -892,8 +910,8 @@ if __name__ == '__main__':
                     reconstruction_metrics,
                     use_amp=args.use_amp,
                     dry_run=args.dry_run,
-                    latent_loss_weight=args.latent_loss_weight)
-                validation_loss = dist.gather(reconstruction_loss_validation)
+                    latent_loss_weight=args.latent_loss_weight,
+                    )
 
                 if is_master_process() and (
                         tensorboard_writer is not None
@@ -903,8 +921,8 @@ if __name__ == '__main__':
                         'vqvae-validation',
                         epoch_index,
                         model.module,
-                        args.latent_loss_weight,
                         args.reconstruction_criterion,
+                        validation_loss,
                         reconstruction_loss_validation,
                         latent_loss_validation,
                         perplexity_t_validation,
