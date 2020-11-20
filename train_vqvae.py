@@ -37,7 +37,7 @@ from interactive_spectrogram_inpainting.utils.losses.spectral import (
 from interactive_spectrogram_inpainting.utils.training.scheduler import (
     CycleScheduler)
 from interactive_spectrogram_inpainting.utils.distributed import (
-    is_distributed, is_master_process)
+    is_distributed, is_master_process, DistributedEvalSampler)
 
 import matplotlib as mpl
 # use matplotlib without an X server
@@ -528,8 +528,11 @@ if __name__ == '__main__':
     def expand_path(path: str) -> pathlib.Path:
         return pathlib.Path(path).expanduser().absolute()
 
-    def maybe_get_sampler(dataset: Dataset) -> Optional[DistributedSampler]:
-        return DistributedSampler(dataset) if is_distributed() else None
+    def maybe_get_sampler(dataset: Dataset, use_eval_sampler: bool
+                          ) -> Optional[DistributedSampler]:
+        sampler = (DistributedSampler if not use_eval_sampler
+                   else DistributedEvalSampler)
+        return sampler(dataset) if is_distributed() else None
 
     audio_directory_paths = [expand_path(path)
                              for path in args.dataset_audio_directory_paths]
@@ -563,7 +566,8 @@ if __name__ == '__main__':
         json_data_path=train_dataset_json_data_path,
         **common_dataset_parameters)
 
-    train_sampler = maybe_get_sampler(nsynth_dataset)
+    train_sampler = maybe_get_sampler(nsynth_dataset,
+                                      use_eval_sampler=False)
     train_loader = dataloader_class(
         dataset=nsynth_dataset,
         sampler=train_sampler,
@@ -583,7 +587,8 @@ if __name__ == '__main__':
             json_data_path=validation_dataset_json_data_path,
             **common_dataset_parameters
         )
-        validation_sampler = maybe_get_sampler(nsynth_validation_dataset)
+        validation_sampler = maybe_get_sampler(nsynth_validation_dataset,
+                                               use_eval_sampler=True)
         validation_loader = dataloader_class(
             dataset=nsynth_validation_dataset,
             sampler=validation_sampler,
