@@ -17,6 +17,8 @@ from torch.utils.data import DataLoader, Dataset, DistributedSampler
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.nn.modules.loss import _Loss as Loss
 from torch.utils.tensorboard.writer import SummaryWriter
+from torch.cuda.amp.grad_scaler import GradScaler
+from torch.cuda.amp.autocast_mode import autocast
 import torchvision
 
 from pytorch_nsynth import NSynth
@@ -129,9 +131,11 @@ def train(epoch: int, loader: DataLoader, model: VQVAE,
           reconstruction_criterion: Loss,
           optimizer: Optimizer,
           scheduler: Optional[optim.lr_scheduler._LRScheduler],
+          scaler: GradScaler,
           device: str,
           metrics: Mapping[str, Loss],
           run_id: str,
+          use_amp: bool,
           latent_loss_weight: float = 0.25,
           enable_image_dumps: bool = False,
           tensorboard_writer: Optional[SummaryWriter] = None,
@@ -164,18 +168,23 @@ def train(epoch: int, loader: DataLoader, model: VQVAE,
 
         img = img.to(device)
 
+        with torch.cuda.amp.autocast(enabled=use_amp):
         out, latent_loss, perplexity_t_mean, perplexity_b_mean, *_ = (
             model(img))
         reconstruction_loss = reconstruction_criterion(out, img)
         latent_loss = latent_loss.mean()
         loss = reconstruction_loss + latent_loss_weight * latent_loss
-        loss.backward()
+
+        scaler.scale(loss).backward()
 
         if clip_grad_norm is not None:
+            scaler.unscale_(optimizer)
             nn.utils.clip_grad_norm_(model.parameters(),
                                      clip_grad_norm)
 
-        optimizer.step()
+        scaler.step(optimizer)
+        scaler.update()
+
         if scheduler is not None:
             scheduler.step()
 
@@ -281,6 +290,7 @@ def evaluate(loader: DataLoader, model: nn.Module,
              reconstruction_criterion: Loss,
              device: str,
              reconstruction_metrics: Dict[str, Loss],
+             use_amp: bool,
              latent_loss_weight: float = 0.25,
              dry_run: bool = False):
     """Evaluate model and return metrics averaged over a validation/test set"""
@@ -303,6 +313,7 @@ def evaluate(loader: DataLoader, model: nn.Module,
         batch_size = img.shape[0]
         img = img.to(device)
 
+        with torch.cuda.amp.autocast(enabled=use_amp):
         out, latent_loss, perplexity_t_mean, perplexity_b_mean, *_ = (
             model(img))
         reconstruction_loss_batch = reconstruction_criterion(out, img)
@@ -349,12 +360,14 @@ def add_audio_and_image_samples_tensorboard(
         spectrograms_helper: SpectrogramsHelper,
         epoch_index: int,
         subset_name: str,
-        device: str) -> None:
+        device: str,
+        use_amp: bool) -> None:
     print("Dump image and audio samples to Tensorboard")
     # add audio summaries to Tensorboard
     model.eval()
     samples, *_ = next(iter(dataloader))
     samples = samples[:num_samples]
+    with torch.cuda.amp.autocast(enabled=use_amp):
     reconstructions, *_ = (vqvae.forward(samples.to(
         device)))
 
@@ -502,6 +515,8 @@ if __name__ == '__main__':
     parser.add_argument('--resnet_layers_per_downsampling_block', type=int,
                         default=4)
     parser.add_argument('--resnet_expansion', type=int, default=1)
+    parser.add_argument('--use_amp', action='store_true',
+                        help="Enable AutomaticMixedPrecision (AMP) training")
 
     # DistributedDataParallel arguments
     parser.add_argument(
@@ -742,6 +757,7 @@ if __name__ == '__main__':
     )
 
     optimizer = optim.Adam(model.parameters(), lr=args.lr)
+    scaler = GradScaler(enabled=args.use_amp)
 
     scheduler = None
     if args.sched == 'cycle':
@@ -825,7 +841,9 @@ if __name__ == '__main__':
             spectrograms_helper,
             start_epoch-1,
             'VALIDATION',
-            device)
+            device,
+            use_amp=args.use_amp,
+            )
 
     dist.barrier()
     for epoch_index in range(start_epoch, args.num_training_epochs):
@@ -833,7 +851,7 @@ if __name__ == '__main__':
             train_sampler.set_epoch(epoch_index)
 
         train(epoch_index, train_loader, model, reconstruction_criterion,
-              optimizer, scheduler, device,
+              optimizer, scheduler, scaler, device,
               reconstruction_metrics,
               run_id=run_ID,
               latent_loss_weight=args.latent_loss_weight,
@@ -843,7 +861,9 @@ if __name__ == '__main__':
               tensorboard_num_audio_samples=5,
               dry_run=args.dry_run,
               clip_grad_norm=args.clip_grad_norm,
-              train_logs_frequency_batches=args.train_logs_frequency_batches)
+              train_logs_frequency_batches=args.train_logs_frequency_batches,
+              use_amp=args.use_amp
+              )
 
         if is_master_process() and tensorboard_writer is not None:
             add_audio_and_image_samples_tensorboard(
@@ -853,7 +873,8 @@ if __name__ == '__main__':
                 spectrograms_helper,
                 epoch_index,
                 'TRAINING',
-                device)
+                device,
+                use_amp=args.use_amp)
         dist.barrier()
 
         validation_loss: Optional[float] = None
@@ -869,6 +890,7 @@ if __name__ == '__main__':
                     validation_loader, model, reconstruction_criterion,
                     device,
                     reconstruction_metrics,
+                    use_amp=args.use_amp,
                     dry_run=args.dry_run,
                     latent_loss_weight=args.latent_loss_weight)
                 validation_loss = dist.gather(reconstruction_loss_validation)
@@ -906,7 +928,8 @@ if __name__ == '__main__':
                         spectrograms_helper,
                         epoch_index,
                         'VALIDATION',
-                        device)
+                        device,
+                        use_amp=args.use_amp)
 
                     tensorboard_writer.flush()
                 dist.barrier()
