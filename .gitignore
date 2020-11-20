@@ -121,3 +121,5 @@ uploads/
 
 # local folder for training outputs, samples etc.
 data/
+
+*.code-workspace
