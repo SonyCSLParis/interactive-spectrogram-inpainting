@@ -42,6 +42,8 @@ from interactive_spectrogram_inpainting.utils.training.scheduler import (
     CycleScheduler)
 from interactive_spectrogram_inpainting.utils.distributed import (
     is_distributed, is_master_process, DistributedEvalSampler)
+from interactive_spectrogram_inpainting.utils.training.checkpoint import(
+    Checkpoint)
 
 import matplotlib as mpl
 # use matplotlib without an X server
@@ -170,9 +172,9 @@ def train(epoch: int, loader: DataLoader, model: VQVAE,
         img = img.to(device)
 
         with torch.cuda.amp.autocast(enabled=use_amp):
-        out, latent_loss, perplexity_t_mean, perplexity_b_mean, *_ = (
-            model(img))
-        reconstruction_loss = reconstruction_criterion(out, img)
+            out, latent_loss, perplexity_t_mean, perplexity_b_mean, *_ = (
+                model(img))
+            reconstruction_loss = reconstruction_criterion(out, img)
         latent_loss = latent_loss.mean()
         loss = reconstruction_loss + latent_loss_weight * latent_loss
 
@@ -318,9 +320,9 @@ def evaluate(loader: DataLoader, model: nn.Module,
         img = img.to(device)
 
         with torch.cuda.amp.autocast(enabled=use_amp):
-        out, latent_loss, perplexity_t_mean, perplexity_b_mean, *_ = (
-            model(img))
-        reconstruction_loss_batch = reconstruction_criterion(out, img)
+            out, latent_loss, perplexity_t_mean, perplexity_b_mean, *_ = (
+                model(img))
+            reconstruction_loss_batch = reconstruction_criterion(out, img)
 
         reconstruction_loss_total += reconstruction_loss_batch * batch_size
         perplexity_t_total += perplexity_t_mean.mean() * batch_size
@@ -384,8 +386,8 @@ def add_audio_and_image_samples_tensorboard(
     samples, *_ = next(iter(dataloader))
     samples = samples[:num_samples]
     with torch.cuda.amp.autocast(enabled=use_amp):
-    reconstructions, *_ = (vqvae.forward(samples.to(
-        device)))
+        reconstructions, *_ = (vqvae.forward(samples.to(
+            device)))
 
     samples_audio = spectrograms_helper.to_audio(
         samples)
@@ -952,20 +954,21 @@ if __name__ == '__main__':
                     tensorboard_writer.flush()
                 dist.barrier()
 
-        # store results
         if not is_master_process() or args.dry_run or args.disable_writes_to_disk:
             pass
         else:
+            # store results
+            checkpoint = Checkpoint(
+                model=model,
+                epoch=epoch_index,
+                optimizer=optimizer,
+                scheduler=scheduler,
+                scaler=scaler,
+                validation_loss=validation_loss,
+                validation_metrics=reconstruction_metrics_validation
+            )
             if (epoch_index == args.num_training_epochs - 1  # save last run
                     or (epoch_index-start_epoch) % args.save_frequency == 0):
-                checkpoint = dict(
-                    model=model.state_dict(),
-                    epoch=epoch_index,
-                    optimizer=optimizer.state_dict(),
-                    scheduler=(scheduler.state_dict()
-                               if scheduler is not None else None),
-                    validation_loss=validation_loss
-                )
                 torch.save(
                     checkpoint,
                     CHECKPOINTS_DIR_PATH / checkpoint_filename
