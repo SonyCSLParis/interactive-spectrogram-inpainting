@@ -6,7 +6,8 @@ from interactive_spectrogram_inpainting.priors.transformer import (
 from sample import (sample_model, make_conditioning_tensors,
                     ConditioningMap, make_conditioning_map)
 from dataset import LMDBDataset
-from utils.misc import expand_path, get_spectrograms_helper
+from interactive_spectrogram_inpainting.utils.misc import (
+    expand_path, get_spectrograms_helper)
 
 from GANsynth_pytorch.spectrograms_helper import SpectrogramsHelper
 
