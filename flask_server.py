@@ -25,6 +25,7 @@ import librosa.display
 from sklearn.preprocessing import LabelEncoder
 from zipfile import ZipFile
 from distutils.util import strtobool
+import numpy as np
 
 import torch
 import torchaudio
@@ -508,7 +509,7 @@ def get_duration_sox_s(audio_file_path: str) -> float:
 
 
 def get_vqvae_top_resolution_n() -> int:
-    """Return the duration in seconds of one column of the VQVAE's top layer"""
+    """Return the duration in samples of one column of the VQVAE's top layer"""
     global vqvae
     assert vqvae is not None
     global transformer_top
@@ -545,7 +546,7 @@ def adapt_duration(audio_file_path: str) -> float:
     vqvae_top_resolution_n = get_vqvae_top_resolution_n()
     duration_n = vqvae_top_resolution_n * (max(
         transformer_top.shape[1],
-        1 + duration_n // vqvae_top_resolution_n))
+        np.round(duration_n / vqvae_top_resolution_n)))
     return duration_n
 
 
