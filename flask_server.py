@@ -12,7 +12,7 @@ from interactive_spectrogram_inpainting.utils.misc import (
 from GANsynth_pytorch.spectrograms_helper import SpectrogramsHelper
 
 import soundfile
-from typing import Union, Tuple, Mapping, Optional, List
+from typing import Union, Tuple, Mapping, Optional, Dict, List
 import click
 import tempfile
 import os
@@ -334,11 +334,44 @@ def resize_codemaps_repeat_last(
                                                 (duration_top, duration_bottom)))
 
 
-def get_codemaps_from_database(duration_top: int):
+def get_codemaps_from_database(
+        duration_top: int,
+        attribute_constraints: Dict[str, Union[any, List[any]]] = {}):
     global codes_dataloader
     assert codes_dataloader is not None
-    top_code, bottom_code, _ = next(iter(codes_dataloader))
-    return resize_codemaps_repeat_last(top_code, bottom_code, duration_top)
+    global label_encoders_per_modality
+    if 'pitch_class' or 'octave' in attribute_constraints.keys():
+        assert (label_encoders_per_modality is not None
+                and 'pitch' in label_encoders_per_modality)
+
+    def decode_attributes(encoded_attributes):
+        decoded_attributes = {
+            key: label_encoders_per_modality[key].inverse_transform(
+                [value.item()])[0]
+            for key, value in encoded_attributes.items()}
+        if 'pitch_class' in attribute_constraints.keys():
+            decoded_attributes['pitch_class'] = (
+                decoded_attributes['pitch'] % 12)
+        if 'octave' in attribute_constraints.keys():
+            decoded_attributes['pitch_class'] = (
+                decoded_attributes['pitch'] // 12)
+        return decoded_attributes
+
+    def check_attributes(
+            attributes: Dict[str, Union[any, List[any]]]):
+        return all([
+            attributes[key] == constraint
+            for key, constraint in attribute_constraints.items()
+        ])
+
+    found_valid_sample = False
+    while not found_valid_sample:
+        top_code, bottom_code, encoded_sample_attributes = next(iter(
+            codes_dataloader))
+        sample_attributes = decode_attributes(encoded_sample_attributes)
+        found_valid_sample = check_attributes(sample_attributes)
+    return (resize_codemaps_repeat_last(top_code, bottom_code, duration_top),
+            sample_attributes)
 
 
 @torch.no_grad()
@@ -414,16 +447,57 @@ def generate():
 @torch.no_grad()
 @app.route('/sample-from-dataset', methods=['GET', 'POST'])
 def sample_from_dataset():
-    pitch = int(request.args.get('pitch'))
-    instrument_family_str = str(request.args.get('instrument_family_str'))
-    duration_top = int(request.args.get('duration_top'))
+    global label_encoders_per_modality
+    assert label_encoders_per_modality is not None
+
+    duration_top = request.args.get('duration_top', type=int)
+
+    # retrieve and check sampling constraints
+    constraint_pitch = (
+        request.args.get('pitch', type=int, default=None))
+    assert (
+        constraint_pitch is None
+        or constraint_pitch in label_encoders_per_modality['pitch'].classes_
+        )
+
+    constraint_pitch_class = request.args.get('pitch_class', type=int,
+                                              default=None)
+    if (constraint_pitch_class is not None
+        and (constraint_pitch_class < 0
+             or constraint_pitch_class > 12)):
+        constraint_pitch_class = None
+
+    constraint_octave = request.args.get('octave', type=int, default=None)
+    if (constraint_octave is not None and constraint_octave < 0):
+        constraint_octave = None
+
+    constraint_instrument_family_str = request.args.get(
+        'instrument_family_str', type=str, default=None)
+    assert (
+        constraint_instrument_family_str is None
+        or constraint_instrument_family_str in (
+            label_encoders_per_modality['instrument_family_str'].classes_)
+        )
+
+    attribute_constraints = {}
+    # TODO(theis, 2021_04_20): simplify this
+    if constraint_pitch is not None:
+        attribute_constraints['pitch'] = constraint_pitch
+    if constraint_pitch_class is not None:
+        attribute_constraints['pitch_class'] = constraint_pitch_class
+    if constraint_octave is not None:
+        attribute_constraints['octave'] = constraint_octave
+    if constraint_instrument_family_str is not None:
+        attribute_constraints['instrument_family_str'] = (
+            constraint_instrument_family_str)
+    (top_code, bottom_code), sampled_attributes = get_codemaps_from_database(
+        duration_top, attribute_constraints)
 
     class_conditioning_top = class_conditioning_bottom = {
-        'pitch': pitch,
-        'instrument_family_str': instrument_family_str
+        'pitch': int(sampled_attributes['pitch']),
+        'instrument_family_str': str(
+            sampled_attributes['instrument_family_str'])
     }
-
-    top_code, bottom_code = get_codemaps_from_database(duration_top)
 
     class_conditioning_top_map = {
         modality: make_matrix(top_code.shape,
