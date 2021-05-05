@@ -95,7 +95,7 @@ def full_frame(width=None, height=None):
     ax = plt.axes((0, 0, 1, 1), frameon=False)
     ax.get_xaxis().set_visible(False)
     ax.get_yaxis().set_visible(False)
-    plt.autoscale(tight=True)
+    ax.autoscale(tight=True)
     return fig, ax
 
 
