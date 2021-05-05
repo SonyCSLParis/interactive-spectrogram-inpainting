@@ -25,7 +25,6 @@ import librosa.display
 from sklearn.preprocessing import LabelEncoder
 from zipfile import ZipFile
 from distutils.util import strtobool
-import numpy as np
 
 import torch
 import torchaudio
@@ -561,11 +560,10 @@ def get_duration_sox_n(audio_file_path: str) -> float:
     assert FS_HZ is not None
     audiometadata = torchaudio.info(audio_file_path)
     num_frames = audiometadata.num_frames
-    num_channels = audiometadata.num_channels
     original_fs_hz = audiometadata.sample_rate
-    duration_n = num_frames // num_channels
+    duration_n = num_frames
     # TODO(theis): probably not exact value
-    duration_n_resampled = int(duration_n * (FS_HZ / original_fs_hz))
+    duration_n_resampled = round(duration_n * (FS_HZ / original_fs_hz))
     return duration_n_resampled
 
 
@@ -618,7 +616,7 @@ def adapt_duration(audio_file_path: str) -> float:
     vqvae_top_resolution_n = get_vqvae_top_resolution_n()
     duration_n = vqvae_top_resolution_n * (max(
         transformer_top.shape[1],
-        np.round(duration_n / vqvae_top_resolution_n)))
+        round(duration_n / vqvae_top_resolution_n)))
     return duration_n
 
 
