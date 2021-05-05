@@ -102,6 +102,7 @@ def full_frame(width=None, height=None):
 def make_spectrogram_image(spectrogram: torch.Tensor,
                            filename: str = 'spectrogram',
                            upsampling_factor: int = 1,
+                           format: str = 'png'
                            ) -> pathlib.Path:
     """Generate and save a png image for the provided spectrogram.
 
@@ -116,31 +117,28 @@ def make_spectrogram_image(spectrogram: torch.Tensor,
     assert FS_HZ is not None
     global HOP_LENGTH
     assert HOP_LENGTH is not None
-    # fig, ax = plt.subplots(figsize=(12, 8))
-    # ax.set_axis_off()
-    fig, ax = full_frame(width=12, height=8)
-    upsampled_spectrogram = (
-        torch.nn.functional.interpolate(
-            spectrogram.unsqueeze(0).unsqueeze(1),
-            mode='bilinear',
-            scale_factor=upsampling_factor)).squeeze(0).squeeze(0)
-    spectrogram_np = upsampled_spectrogram.cpu().numpy()
-    librosa.display.specshow(spectrogram_np,
-                             #  y_axis='mel',
-                             ax=ax,
-                             sr=FS_HZ * upsampling_factor,
-                             cmap='viridis',
-                             hop_length=HOP_LENGTH)
-    # ax.margins(0)
-    # fig.tight_layout()
 
-    image_format = 'png'
-    # output_path = tempfile.mktemp() + '.' + image_format
-    output_path = upload_directory + filename + '.' + image_format
-    fig.savefig(output_path, format=image_format, dpi=200,
+    if upsampling_factor > 1:
+        spectrogram = (
+            torch.nn.functional.interpolate(
+                spectrogram.unsqueeze(0).unsqueeze(1),
+                mode='bilinear',
+                scale_factor=upsampling_factor)).squeeze(0).squeeze(0)
+    spectrogram_np = spectrogram.cpu().numpy()
+
+    fig, ax = full_frame(width=12, height=8)
+    librosa.display.specshow(spectrogram_np,
+                                #  y_axis='mel',
+                                ax=ax,
+                                sr=FS_HZ * upsampling_factor,
+                                cmap='viridis',
+                                hop_length=HOP_LENGTH)
+    output_path = upload_directory + filename + '.' + format
+    fig.savefig(output_path, format=format, dpi=200,
                 pad_inches=0, bbox_inches=0)
     fig.clear()
     plt.close()
+
     return pathlib.Path(output_path)
 
 
@@ -1037,12 +1035,14 @@ def codes_to_spectrogram_image_response():
 
     # generate spectrogram PNG image
     spectrogram = logmelspectrogram_and_IF[0, 0]
+    image_format = 'png'
     spectrogram_image_path = make_spectrogram_image(
         spectrogram,
-        upsampling_factor=SPECTROGRAMS_UPSAMPLING_FACTOR)
+        upsampling_factor=SPECTROGRAMS_UPSAMPLING_FACTOR,
+        format=image_format)
 
     return flask.send_file(spectrogram_image_path,
-                           mimetype="image/png",
+                           mimetype=f"image/{image_format}",
                            cache_timeout=-1  # disable cache
                            )
 
