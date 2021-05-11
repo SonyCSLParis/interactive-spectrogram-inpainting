@@ -382,7 +382,7 @@ which can be done in a context-aware fashion using the masking procedure introdu
 
 The two different layers of the VQ-VAE allow to perform sonic transformations at different scales.
 By editing the top codemap, on which the bottom codemap is, in turn, conditioned,
-one can perform radical changes on the existing sound
+one can perform radical changes on the existing sound.
 
 We perform all our demonstrations on the following sample, taken from the official NSynth test split:
 
