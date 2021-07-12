@@ -6,6 +6,8 @@ from interactive_spectrogram_inpainting.priors.transformer import (
 from sample import (sample_model, make_conditioning_tensors,
                     ConditioningMap, make_conditioning_map)
 from dataset import LMDBDataset
+from interactive_spectrogram_inpainting.utils.datasets.label_encoders import (
+    load_label_encoders)
 from interactive_spectrogram_inpainting.utils.misc import (
     expand_path, get_spectrograms_helper)
 
@@ -157,7 +159,7 @@ def make_spectrogram_image(spectrogram: torch.Tensor,
               required=True)
 @click.option('--prediction_bottom_weights_path', type=pathlib.Path,
               required=True)
-@click.option('--database_path_for_label_encoders', type=pathlib.Path,
+@click.option('--label_encoders_path', type=pathlib.Path,
               required=True)
 @click.option('--database_path_for_sampling', type=pathlib.Path,
               required=True)
@@ -187,7 +189,7 @@ def init_app(vqvae_model_parameters_path: pathlib.Path,
              prediction_top_weights_path: pathlib.Path,
              prediction_bottom_parameters_path: pathlib.Path,
              prediction_bottom_weights_path: pathlib.Path,
-             database_path_for_label_encoders: pathlib.Path,
+             label_encoders_path: pathlib.Path,
              database_path_for_sampling: pathlib.Path,
              fs_hz: int,
              max_sound_duration_s: float,
@@ -261,12 +263,8 @@ def init_app(vqvae_model_parameters_path: pathlib.Path,
     global label_encoders_per_modality
     print("Retrieve label encoders")
     classes_for_conditioning = ['pitch', 'instrument_family_str']
-    DATABASE_PATH = expand_path(database_path_for_label_encoders)
-    dataset = LMDBDataset(
-        DATABASE_PATH,
-        classes_for_conditioning=list(classes_for_conditioning)
-    )
-    label_encoders_per_modality = dataset.label_encoders
+    label_encoders_per_modality = load_label_encoders(
+        expand_path(label_encoders_path))
 
     global codes_dataloader
     print("Load dataset for initial sounds sampling")

@@ -49,11 +49,10 @@ class LMDBDataset(Dataset):
                 or len(self.classes_for_conditioning) == 0):
             self.label_encoders = {}
         else:
-            with self.env.begin() as txn:
-                self.label_encoders = pickle.loads(
-                    txn.get('label_encoders'.encode('utf-8')))
-                self.label_encoders = self._filter_classes_labels(
-                    self.label_encoders)
+            self.label_encoders = self._filter_classes_labels(
+                load_label_encoders(
+                    pathlib.Path(path) / 'label_encoders.json')
+            )
 
     def __init_indexes(self):
         """Initialize index-to-database-key mapping"""

@@ -18,8 +18,8 @@ from torch import nn
 from torch.nn import functional as F
 from torchvision.utils import save_image
 
-from interactive_spectrogram_inpainting.utils.datasets.lmdb_dataset import (
-    LMDBDataset)
+from interactive_spectrogram_inpainting.utils.datasets.label_encoders import (
+    load_label_encoders)
 from interactive_spectrogram_inpainting.vqvae.vqvae import VQVAE
 from interactive_spectrogram_inpainting.priors.transformer import (
     VQNSynthTransformer,
@@ -427,7 +427,7 @@ if __name__ == '__main__':
     parser.add_argument('--class_conditioning_bottom', type=key_value, nargs='*',
                         default=[])
     # TODO(theis): change this, store label encoders inside the VQNSynthTransformer model class
-    parser.add_argument('--database_path_for_label_encoders', type=str)
+    parser.add_argument('--label_encoders_path', type=str)
     parser.add_argument('--temperature', type=float, default=1.0)
     parser.add_argument('--top_p_sampling_p', type=float, default=0.0)
     parser.add_argument('--top_k_sampling_k', type=int, default=0)
@@ -509,13 +509,9 @@ if __name__ == '__main__':
     #                             for modality, _ in )
     # classes_for_conditioning.update(additional_modalities)
 
-    if args.database_path_for_label_encoders is not None:
-        DATABASE_PATH = expand_path(args.database_path_for_label_encoders)
-        dataset = LMDBDataset(
-            DATABASE_PATH,
-            classes_for_conditioning=list(classes_for_conditioning)
-        )
-        label_encoders_per_conditioning = dataset.label_encoders
+    if args.label_encoders_path is not None:
+        label_encoders_per_conditioning = load_label_encoders(
+            args.label_encoders_path)
 
     class_conditioning_tensors_top = make_conditioning_tensors(
         class_conditioning_top,
