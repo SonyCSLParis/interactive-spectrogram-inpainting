@@ -28,9 +28,6 @@ from interactive_spectrogram_inpainting.priors.transformer import (
 from interactive_spectrogram_inpainting.utils.misc import (
     get_spectrograms_helper)
 
-if torch.cuda.is_available():
-    torch.set_default_tensor_type(torch.cuda.FloatTensor)
-
 # use matplotlib without an X server
 # on desktop, this prevents matplotlib windows from popping around
 mpl.use('Agg')
@@ -257,7 +254,9 @@ def sample_model(model: VQNSynthTransformer, device: Union[torch.device, str],
         gumbel_noise_shape = codemap_as_sequence.shape + (model.n_class_target,)
         standard_gumbel_distribution = torch.distributions.gumbel.Gumbel(
             torch.zeros(gumbel_noise_shape), 1)
-        standard_gumbel_sample = standard_gumbel_distribution.sample()
+        standard_gumbel_sample = (standard_gumbel_distribution
+                                  .sample()
+                                  .to(device))
     else:
         standard_gumbel_sample = None
 

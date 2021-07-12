@@ -624,7 +624,8 @@ class VQNSynthTransformer(nn.Module):
         """Overwrite the end of the positional embeddings with the class"""
         embeddings = torch.zeros(
             (*sequence_with_positions.shape[:2],
-             self.class_conditioning_total_dim))
+             self.class_conditioning_total_dim),
+            device=sequence_with_positions.device)
         for condition_name, class_condition in class_conditioning.items():
             modality_embeddings = (
                 self.class_conditioning_embedding_layers[
@@ -745,13 +746,14 @@ class VQNSynthTransformer(nn.Module):
         (batch_dim, sequence_dim) = (1, 0)
 
         memory_mask = None
+        causal_mask = self.causal_mask.to(input.device)
         if self.conditional_model:
             if self.use_identity_memory_mask:
                 memory_mask = self.identity_memory_mask
             if memory is None:
                 src_mask = None
                 if self.self_conditional_model:
-                    anti_causal_mask = self.causal_mask.t()
+                    anti_causal_mask = causal_mask.t()
                     src_mask = anti_causal_mask
                 memory = self.transformer.encoder(
                     time_major_source_sequence,
@@ -763,19 +765,18 @@ class VQNSynthTransformer(nn.Module):
                 output_sequence = self.transformer.decoder(
                     time_major_target_sequence,
                     memory,
-                    tgt_mask=self.causal_mask,
+                    tgt_mask=causal_mask,
                     memory_mask=memory_mask,
                     condition=time_major_class_condition_sequence)
             else:
                 output_sequence = self.transformer.decoder(
                     time_major_target_sequence,
                     memory,
-                    tgt_mask=self.causal_mask,
+                    tgt_mask=causal_mask,
                     memory_mask=memory_mask)
-
         else:
             output_sequence = self.transformer(time_major_source_sequence,
-                                               mask=self.causal_mask)
+                                               mask=causal_mask)
         if self.use_relative_transformer:
             output_sequence, *decoder_attentions = output_sequence
 
