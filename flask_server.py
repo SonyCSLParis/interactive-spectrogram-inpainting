@@ -40,7 +40,6 @@ from flask_cors import CORS
 import logging
 from logging import handlers as logging_handlers
 
-
 torchaudio.set_audio_backend('sox_io')
 
 # use matplotlib without an X server
@@ -363,6 +362,8 @@ def get_codemaps_from_database(
 
     found_valid_sample = False
     while not found_valid_sample:
+        # TODO(theis, 2021/06/29): replace this brute-force search with
+        # usign a proper database search with filtering etc.
         top_code, bottom_code, encoded_sample_attributes = next(iter(
             codes_dataloader))
         sample_attributes = decode_attributes(encoded_sample_attributes)

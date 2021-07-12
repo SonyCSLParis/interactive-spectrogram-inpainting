@@ -1,13 +1,11 @@
-from typing import Iterable, Mapping, Union, Optional, Sequence, Tuple
+from typing import Iterable, Mapping, Union, Optional, Tuple
 import pathlib
 import json
-from abc import ABC, abstractmethod
+from abc import abstractmethod
 from enum import Enum, auto
 
-import numpy as np
 import torch
 from torch import nn
-from torch.nn import functional as F
 
 from .codemaps_helpers import (CodemapsHelper,
                                SimpleCodemapsHelper, ZigZagCodemapsHelper)

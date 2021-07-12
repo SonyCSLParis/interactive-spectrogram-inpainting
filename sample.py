@@ -135,7 +135,7 @@ def sample_model(model: VQNSynthTransformer, device: Union[torch.device, str],
                  constraint: Optional[torch.Tensor] = None,
                  class_conditioning: Mapping[str, Iterable[int]] = {},
                  initial_code: Optional[torch.Tensor] = None,
-                 mask: Optional[torch.Tensor] = None,
+                 mask: Optional[torch.BoolTensor] = None,
                  local_class_conditioning_map: Optional[Mapping[str, Iterable[int]]] = None,
                  time_indexes_source: Optional[Iterable[int]] = None,
                  time_indexes_target: Optional[Iterable[int]] = None,
@@ -143,7 +143,7 @@ def sample_model(model: VQNSynthTransformer, device: Union[torch.device, str],
                  top_p_sampling_p: float = 0.0,
                  # this option allows to drop-in tqdm_notebook when needed
                  progressbar_decorator=tqdm,
-                 use_predictive_sampling: bool=False  # https://arxiv.org/abs/2002.09928
+                 use_predictive_sampling: bool = False  # https://arxiv.org/abs/2002.09928
                  ):
     """Generate a sample from the provided PixelSNAIL
 
@@ -265,8 +265,8 @@ def sample_model(model: VQNSynthTransformer, device: Union[torch.device, str],
     correct_predictions = 0
     sample = None
     previous_codemap_as_sequence = codemap_as_sequence
-    for i, is_unmasked in progressbar_decorator(enumerate(mask_sequence)):
-        if not is_unmasked:
+    for i, is_masked in progressbar_decorator(enumerate(mask_sequence)):
+        if not is_masked:
             continue
         if (use_predictive_sampling
                 and sample is not None
