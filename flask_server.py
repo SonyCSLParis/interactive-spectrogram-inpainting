@@ -271,7 +271,7 @@ def init_app(vqvae_model_parameters_path: pathlib.Path,
     global codes_dataloader
     print("Load dataset for initial sounds sampling")
     classes_for_conditioning = ['pitch', 'instrument_family_str']
-    SAMPLING_DATABASE_PATH = expand_path(database_path_for_label_encoders)
+    SAMPLING_DATABASE_PATH = expand_path(database_path_for_sampling)
     codes_dataset = LMDBDataset(
         SAMPLING_DATABASE_PATH,
         classes_for_conditioning=list(classes_for_conditioning)
