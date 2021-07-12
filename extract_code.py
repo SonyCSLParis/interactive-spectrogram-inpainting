@@ -234,13 +234,6 @@ if __name__ == '__main__':
             find_unused_parameters=True
         )
 
-        model.load_state_dict(
-            torch.load(
-                VQVAE_WEIGHTS_PATH,
-                map_location=lambda storage, loc: storage.cuda(args.local_rank)
-                )
-            )
-
         model.eval()
 
         # TODO(theis): compute appropriate size for the map,
