@@ -17,11 +17,10 @@ def dump_label_encoders(label_encoders: Mapping[str, LabelEncoder],
 
 def load_label_encoders(path: pathlib.Path):
     label_encoders_classes: Mapping[str, Iterable[int]]
-    with open(path, 'w') as f:
+    with open(path, 'r') as f:
         label_encoders_classes = json.load(f)
     label_encoders: Mapping[str, LabelEncoder] = {}
     for field, classes in label_encoders_classes.items():
-        le = LabelEncoder()
-        le.classes_ = classes
+        le = LabelEncoder().fit(classes)
         label_encoders[field] = le
     return label_encoders
