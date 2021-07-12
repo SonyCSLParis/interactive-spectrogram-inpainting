@@ -268,7 +268,7 @@ if __name__ == '__main__':
         # check extracted codes by saving to disk the audio for a batch
         # of re-synthesized codemaps
         codes_dataset = LMDBDataset(
-            str(lmdb_path),
+            lmdb_path,
             classes_for_conditioning=args.categorical_fields,
             dataset_db_name='codes')
 

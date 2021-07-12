@@ -5,9 +5,10 @@ from interactive_spectrogram_inpainting.priors.transformer import (
     VQNSynthTransformer)
 from sample import (sample_model, make_conditioning_tensors,
                     ConditioningMap, make_conditioning_map)
-from dataset import LMDBDataset
 from interactive_spectrogram_inpainting.utils.datasets.label_encoders import (
     load_label_encoders)
+from interactive_spectrogram_inpainting.utils.datasets.lmdb_dataset import (
+    LMDBDataset)
 from interactive_spectrogram_inpainting.utils.misc import (
     expand_path, get_spectrograms_helper)
 
@@ -272,7 +273,8 @@ def init_app(vqvae_model_parameters_path: pathlib.Path,
     SAMPLING_DATABASE_PATH = expand_path(database_path_for_sampling)
     codes_dataset = LMDBDataset(
         SAMPLING_DATABASE_PATH,
-        classes_for_conditioning=list(classes_for_conditioning)
+        classes_for_conditioning=list(classes_for_conditioning),
+        dataset_db_name='codes'
     )
     codes_dataloader = DataLoader(codes_dataset, shuffle=True,
                                   batch_size=1)

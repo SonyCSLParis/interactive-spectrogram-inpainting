@@ -1,15 +1,15 @@
-from typing import Iterable, Mapping, Optional, Sequence
-import os
-import pickle
-import numpy as np
-from collections import namedtuple, OrderedDict
+from interactive_spectrogram_inpainting.utils.datasets.label_encoders import (
+    load_label_encoders)
 
+import pathlib
+from typing import Mapping, Sequence, Union
+import pickle
+from collections import namedtuple, OrderedDict
 from sklearn.preprocessing import LabelEncoder
 import lmdb
 
 import torch
 from torch.utils.data import Dataset
-from torchvision import datasets
 
 
 CodeRow = namedtuple('CodeRow', ['top', 'bottom', 'attributes', 'filename'])
@@ -17,6 +17,7 @@ CodeRow = namedtuple('CodeRow', ['top', 'bottom', 'attributes', 'filename'])
 
 class LMDBDataset(Dataset):
     _keys: Sequence[bytes]
+    label_encoders: Mapping[str, LabelEncoder]
 
     """Dataset based on a LMDB database
 
@@ -26,17 +27,19 @@ class LMDBDataset(Dataset):
         * active_class_labels, optional, Iterable[str], default=[]:
             If provided,
     """
-    def __init__(self, path, classes_for_conditioning: Sequence[str] = [],
-                 dataset_db_name: str = 'dataset'):
+    def __init__(self, path: Union[str, pathlib.Path],
+                 classes_for_conditioning: Sequence[str] = [],
+                 dataset_db_name: str = 'codes'):
+        map_size = 100 * 1024 * 1024 * 1024
         self.env = lmdb.open(
             str(path),
             max_readers=32,
-            readonly=True,
             lock=False,
             readahead=False,
             meminit=False,
-            max_dbs=2
-        )
+            max_dbs=2,
+            map_size=map_size
+            )
         if not self.env:
             raise IOError('Cannot open lmdb dataset', path)
         self.dataset_db = self.env.open_db(dataset_db_name.encode('utf-8'))
@@ -44,7 +47,6 @@ class LMDBDataset(Dataset):
 
         self.classes_for_conditioning = classes_for_conditioning
 
-        self.label_encoders: Mapping[str, LabelEncoder]
         if (self.classes_for_conditioning is None
                 or len(self.classes_for_conditioning) == 0):
             self.label_encoders = {}
